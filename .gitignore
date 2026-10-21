@@ -1,0 +1,7 @@
+config.json
+config/google_client_secret.json
+workspace/*
+!workspace/.gitkeep
+node_modules/
+*.log
+dist/

@@ -1,0 +1,26 @@
+{
+  "name": "youtube-forge-studio",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Agentic YouTube studio for any Ollama endpoint: scripts off 21 hook formulas, title/thumbnail linting, edit decision lists, retention reading, Shorts cutting and niche research. Zero runtime dependencies.",
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "build": "node scripts/build.js",
+    "check": "node scripts/check.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "bin": {
+    "youtube-forge-studio": "server.js",
+    "yt-studio": "server.js"
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
+  }
+}
