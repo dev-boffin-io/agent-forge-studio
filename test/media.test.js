@@ -176,3 +176,52 @@ test('tools: workerUrl reads config with sensible localhost defaults', () => {
   assert.equal(tools.workerUrl({ ttsWorkerUrl: 'http://host:9000/' }, 'tts'), 'http://host:9000');
   assert.equal(tools.workerUrl({ workers: { render: 'http://w:1' } }, 'render'), 'http://w:1');
 });
+
+// ---- standalone tools (usable from chat without the Auto-Forge state machine) ---------------
+
+test('tools: generate_thumbnail runs standalone and writes a real 1280x720 PNG', async () => {
+  const res = await tools.executeTool('generate_thumbnail', JSON.stringify({ title: 'Standalone Thumb' }), { cfg: {} });
+  assert.equal(res.error, false);
+  const parsed = JSON.parse(res.content);
+  assert.equal(parsed.format, 'png');
+  assert.equal(parsed.stub, false);
+  assert.equal(parsed.width, 1280);
+  assert.equal(parsed.height, 720);
+  const abs = path.join(dir, parsed.path);
+  assert.ok(fs.existsSync(abs), `thumbnail exists at ${abs}`);
+  assert.ok(fs.readFileSync(abs).subarray(0, 8).equals(PNG_SIG));
+});
+
+test('tools: generate_thumbnail honours an explicit relative output path', async () => {
+  const res = await tools.executeTool('generate_thumbnail', JSON.stringify({ title: 'Path Test', out: 'thumbs/path-test.png' }), { cfg: {} });
+  assert.equal(res.error, false);
+  const parsed = JSON.parse(res.content);
+  assert.equal(parsed.path, 'thumbs/path-test.png');
+  assert.ok(fs.existsSync(path.join(dir, 'thumbs/path-test.png')));
+});
+
+test('tools: find_stock_footage runs standalone and degrades to a stub without keys', async () => {
+  const res = await tools.executeTool('find_stock_footage', JSON.stringify({ topic: 'coffee', limit: 2 }), { cfg: {} });
+  assert.equal(res.error, false);
+  const parsed = JSON.parse(res.content);
+  assert.equal(parsed.stub, true);
+  assert.equal(parsed.topic, 'coffee');
+  assert.ok(parsed.shots.length >= 1);
+  assert.ok(parsed.todo.includes('PEXELS_API_KEY'));
+});
+
+test('tools: find_stock_footage runs standalone with a provider key (mocked)', async () => {
+  await withMockFetch(async (url) => {
+    if (String(url).includes('api.pexels.com')) {
+      return jsonResponse({ videos: [{ id: 1, duration: 5, video_files: [{ file_type: 'video/mp4', width: 1920, link: 'https://videos.pexels.com/x.mp4' }] }] });
+    }
+    return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('CLIP').buffer, text: async () => '' };
+  }, async () => {
+    const res = await tools.executeTool('find_stock_footage', JSON.stringify({ topic: 'ocean', limit: 1 }), { cfg: { pexelsApiKey: 'pk' } });
+    assert.equal(res.error, false);
+    const parsed = JSON.parse(res.content);
+    assert.equal(parsed.stub, false);
+    assert.equal(parsed.provider, 'pexels');
+    assert.equal(parsed.count, 1);
+  });
+});
