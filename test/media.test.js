@@ -79,10 +79,15 @@ function jsonResponse(obj, { ok = true, status = 200 } = {}) {
 }
 
 test('pexels: no key → graceful stub with file:null shots', async () => {
-  const r = await stubs.findStockFootage({ topic: 'coffee', workDir: tmpDir(), cfg: {} });
-  assert.equal(r.stub, true);
-  assert.ok(r.shots.every((s) => s.file === null));
-  assert.ok(r.todo.includes('PEXELS_API_KEY'));
+  await withMockFetch(async (url) => {
+    if (String(url).includes('commons.wikimedia.org')) return { ok: false, status: 503, text: async () => 'unavailable', json: async () => ({}) };
+    return { ok: false, status: 500, text: async () => 'boom', json: async () => ({}) };
+  }, async () => {
+    const r = await stubs.findStockFootage({ topic: 'coffee', workDir: tmpDir(), cfg: {} });
+    assert.equal(r.stub, true);
+    assert.ok(r.shots.every((s) => s.file === null));
+    assert.ok(r.todo.includes('PEXELS_API_KEY'));
+  });
 });
 
 test('pexels: downloads clips and returns real shots (stub:false)', async () => {
@@ -201,13 +206,18 @@ test('tools: generate_thumbnail honours an explicit relative output path', async
 });
 
 test('tools: find_stock_footage runs standalone and degrades to a stub without keys', async () => {
-  const res = await tools.executeTool('find_stock_footage', JSON.stringify({ topic: 'coffee', limit: 2 }), { cfg: {} });
-  assert.equal(res.error, false);
-  const parsed = JSON.parse(res.content);
-  assert.equal(parsed.stub, true);
-  assert.equal(parsed.topic, 'coffee');
-  assert.ok(parsed.shots.length >= 1);
-  assert.ok(parsed.todo.includes('PEXELS_API_KEY'));
+  await withMockFetch(async (url) => {
+    if (String(url).includes('commons.wikimedia.org')) return { ok: false, status: 503, text: async () => 'unavailable', json: async () => ({}) };
+    return { ok: false, status: 500, text: async () => 'boom', json: async () => ({}) };
+  }, async () => {
+    const res = await tools.executeTool('find_stock_footage', JSON.stringify({ topic: 'coffee', limit: 2 }), { cfg: {} });
+    assert.equal(res.error, false);
+    const parsed = JSON.parse(res.content);
+    assert.equal(parsed.stub, true);
+    assert.equal(parsed.topic, 'coffee');
+    assert.ok(parsed.shots.length >= 1);
+    assert.ok(parsed.todo.includes('PEXELS_API_KEY'));
+  });
 });
 
 test('tools: find_stock_footage runs standalone with a provider key (mocked)', async () => {
