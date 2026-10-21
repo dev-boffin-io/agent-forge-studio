@@ -7,6 +7,22 @@ Agentic YouTube studio for any Ollama endpoint — scripts, title/thumbnail lint
 2. Run `npx --yes youtube-forge-studio` or `node server.js --dir /your/channel`.
 3. Open the browser UI, pick a model, and start a session. The default agent `create` writes files to your channel workspace; `analyze` is read-only.
 
+## Configuration
+Copy the template and edit it:
+```sh
+cp config.example.json config.json
+```
+`config.json` is gitignored — it holds your endpoint, model and any API keys. Everything is
+optional: any key you leave out falls back to the built-in default in `lib/config.js`.
+
+Key fields:
+- `endpoint` — your Ollama / OpenAI-compatible server (default `http://localhost:11434`).
+- `model` — default model ref; `smallModel` is an optional cheaper model for titles + summaries.
+- `providers` — extra backends, e.g. `{ "openai": { "type": "openai", "apiKeyEnv": "OPENAI_API_KEY" } }` (`type` is `ollama` | `openai` | `anthropic`).
+- `permission` — `allow` | `ask` | `deny` per rule (`bash` accepts a pattern map; last match wins).
+- `youtube` — your Google OAuth **client id + secret** for the channel tools. You can either
+  put them here or click through the UI's YouTube setup; keep the real secret out of git.
+
 ## Features
 - Real agent loop with tool calling (no mock). Deterministic analyzers: hook_score, title_lint, edit_list, chapters_from_transcript, retention_read, viral_rank.
 - Voice-aware agent that reads `voice.md` from the channel workspace.

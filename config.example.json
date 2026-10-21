@@ -1,0 +1,55 @@
+{
+  "endpoint": "http://localhost:11434",
+  "model": "qwen2.5:14b",
+  "agent": "create",
+  "thinking": false,
+  "temperature": 0.6,
+  "numCtx": 0,
+  "autoCtxMax": 131072,
+  "smallModel": "",
+  "apiKey": "",
+  "defaultProvider": "default",
+  "providers": {
+    "openai": {
+      "type": "openai",
+      "endpoint": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "contextWindow": 128000
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "contextWindow": 200000
+    }
+  },
+  "websearch": {
+    "provider": "exa"
+  },
+  "skills": {
+    "paths": []
+  },
+  "maxIterations": 100,
+  "requestTimeoutMs": 600000,
+  "autoCompact": true,
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "*": "ask",
+      "ls *": "allow",
+      "pwd": "allow",
+      "yt-dlp *": "ask",
+      "whisper *": "ask",
+      "ffmpeg *": "ask",
+      "rm *": "deny"
+    },
+    "publish": "allow",
+    "browser": "allow"
+  },
+  "instructions": [],
+  "toolOutput": {},
+  "youtube": {
+    "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
+    "clientSecret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
+    "redirectUri": ""
+  }
+}
