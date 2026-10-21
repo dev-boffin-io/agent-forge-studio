@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>YouTube Forge Studio</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/style.css?v=20261020i" />
+  <link rel="stylesheet" href="/style.css?v=20261021a" />
 </head>
 <body>
   <header class="topbar">
@@ -92,9 +92,18 @@
           <select id="agent" title="create = full Studio agent, analyze = read-only, subagents via task tool"></select>
         </div>
         <div class="row">
+          <button id="autoForgeBtn" class="btn small primary" title="One-click end-to-end: idea → research → script → voice → footage → render → thumbnail → upload">🚀 Start Auto-Forge</button>
           <button id="openYtStudio" class="btn small ghost" title="Open the YouTube Studio panel">📺 Studio</button>
           <button id="summariesBtn" class="btn small ghost" title="Session summary and export">Summary</button>
         </div>
+      </div>
+      <div id="autoforgePanel" class="autoforge" hidden>
+        <div class="autoforge-head">
+          <span class="autoforge-title">🚀 Auto-Forge</span>
+          <span id="autoforgeIdea" class="autoforge-idea"></span>
+          <button id="autoforgeClose" class="btn small ghost" type="button" aria-label="Hide Auto-Forge panel" title="Hide">✕</button>
+        </div>
+        <ol id="autoforgeSteps" class="autoforge-steps"></ol>
       </div>
       <div id="todos" class="todos" hidden></div>
       <div id="messages" class="messages"></div>
@@ -190,7 +199,7 @@
     </div>
   </dialog>
 
-  <script src="/markdown.js?v=20261020i"></script>
-  <script src="/app.js?v=20261020i"></script>
+  <script src="/markdown.js?v=20261021a"></script>
+  <script src="/app.js?v=20261021a"></script>
 </body>
 </html>

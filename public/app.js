@@ -798,6 +798,141 @@ function stopRun() {
   if (state.abortController) state.abortController.abort();
 }
 
+/* ---------- auto-forge (one-click end-to-end workflow) ---------- */
+
+const AF_STEP_IDS = ['idea', 'script', 'voice', 'footage', 'render', 'thumbnail', 'upload'];
+
+function afShowPanel(idea) {
+  const panel = $('autoforgePanel');
+  panel.hidden = false;
+  $('autoforgeIdea').textContent = idea ? '· ' + idea : '';
+  const ol = $('autoforgeSteps');
+  ol.innerHTML = '';
+  AF_STEP_IDS.forEach((id, i) => {
+    const li = document.createElement('li');
+    li.className = 'af-step';
+    li.dataset.id = id;
+    li.innerHTML = `<span class="af-dot"></span><span class="af-num">${i + 1}/${AF_STEP_IDS.length}</span><span class="af-label"></span><span class="af-detail"></span>`;
+    ol.appendChild(li);
+  });
+}
+
+function afSetStep(step, id, status, detail) {
+  const li = $('autoforgeSteps').querySelector(`.af-step[data-id="${id}"]`);
+  if (!li) return;
+  li.className = 'af-step ' + (status || '');
+  const d = li.querySelector('.af-detail');
+  if (detail != null) d.textContent = detail;
+}
+
+function afHandle(ev) {
+  if (ev.id === 'start') { afShowPanel(ev.idea); setStatus('auto-forge: starting…', 'generating'); return; }
+  if (ev.id === 'done') {
+    setStatus(ev.uploaded ? 'auto-forge: uploaded ✓' : 'auto-forge: finished', ev.uploaded ? 'ok' : '');
+    return;
+  }
+  if (ev.status === 'start') {
+    const li = $('autoforgeSteps').querySelector(`.af-step[data-id="${ev.id}"]`);
+    if (li) { li.querySelector('.af-label').dataset.label = ev.label; li.querySelector('.af-label').textContent = `Step ${ev.step}/${ev.total}: ${ev.label}`; }
+    setStatus(`auto-forge: ${ev.label}…`, 'generating');
+    return;
+  }
+  afSetStep(ev.step, ev.id, ev.status, ev.detail || (ev.status === 'error' ? 'Error: ' + (ev.error || 'failed') : ''));
+  if (ev.status === 'error') setStatus(`auto-forge: error in step ${ev.step} (${ev.label})`, 'err');
+  else if (ev.status === 'skipped') addNote(`⚠ Auto-Forge step ${ev.step} (${ev.label}) used a placeholder`);
+}
+
+async function startAutoForge(idea) {
+  if (state.streaming) { addNote('⚠ a run is already in progress'); return; }
+  state.streaming = true;
+  state.abortController = new AbortController();
+  const prevSend = $('send').textContent;
+  $('send').textContent = 'Stop';
+  let finished = false;
+  try {
+    const res = await fetch('/api/workflow/autoforge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: state.abortController.signal,
+      body: JSON.stringify({ idea }),
+    });
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).error || msg; } catch { /* keep status */ }
+      throw new Error(msg);
+    }
+    finished = await consumeAutoForge(res);
+  } catch (err) {
+    if (err.name === 'AbortError') { addNote('■ Auto-Forge stopped.'); setStatus('auto-forge stopped', ''); }
+    else { addErrorBubble(err.message); setStatus('auto-forge: error', 'err'); }
+    finished = true;
+  } finally {
+    state.streaming = false;
+    state.abortController = null;
+    $('send').textContent = prevSend;
+  }
+  if (finished) loadTree().catch(() => {});
+}
+
+async function consumeAutoForge(res) {
+  const cards = new Map();
+  let finished = false;
+  const handle = (event, data) => {
+    switch (event) {
+      case 'autoforge': afHandle(data); break;
+      case 'token': {
+        // append streamed script text into a live note so the user sees progress
+        let el = document.getElementById('afStream');
+        if (!el) { el = addNote(''); el.id = 'afStream'; el.classList.add('af-stream'); }
+        el.textContent = (el.textContent + (data.text || '')).slice(-4000);
+        break;
+      }
+      case 'thinking': break;
+      case 'question': cards.set(data.id, addQuestionCard(data)); break;
+      case 'permission_request': cards.set(data.id, addPermissionCard(data)); break;
+      case 'tool_call': addNote(`◇ ${data.name}`); break;
+      case 'warning': addNote('⚠ ' + (data.message || '')); break;
+      case 'error': addErrorBubble(data.message || 'unknown error'); setStatus('auto-forge: error', 'err'); break;
+      case 'done': finished = true; break;
+    }
+  };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let curEvent = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      let dataLine = '';
+      curEvent = '';
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith(':')) continue;
+        if (line.startsWith('event: ')) curEvent = line.slice(7).trim();
+        else if (line.startsWith('data: ')) dataLine += line.slice(6);
+      }
+      if (!dataLine) continue;
+      let data = null;
+      try { data = JSON.parse(dataLine); } catch { continue; }
+      try { handle(curEvent, data); } catch (e) { console.error('could not show autoforge event', curEvent, e); }
+    }
+  }
+  return finished;
+}
+
+function promptAutoForge() {
+  const panel = $('autoforgePanel');
+  if (!panel.hidden) { panel.hidden = true; return; }
+  const idea = window.prompt('What should Auto-Forge make today?\n\nGive it a topic or a working idea, e.g. "5 fixes for a channel stuck under 500 views".');
+  if (!idea || !idea.trim()) return;
+  addMessage('user', '🚀 Auto-Forge: ' + idea.trim());
+  startAutoForge(idea.trim());
+}
+
 /* ---------- providers dialog ---------- */
 
 const PRESETS = {
@@ -1287,6 +1422,10 @@ async function init() {
   $('closeYtStudio').addEventListener('click', closeYtStudio);
   $('collapseYtStudio').addEventListener('click', toggleCollapseYtStudio);
   $('launchBrowser').addEventListener('click', launchAutomationBrowser);
+
+  // Auto-Forge
+  $('autoForgeBtn').addEventListener('click', promptAutoForge);
+  $('autoforgeClose').addEventListener('click', () => { $('autoforgePanel').hidden = true; });
 
   // context menu dismiss
   document.addEventListener('click', (e) => { if (!$('ctxMenu').contains(e.target)) closeMenu(); });
