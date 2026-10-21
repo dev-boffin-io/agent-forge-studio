@@ -162,3 +162,42 @@ test('autoforge: a hanging script step is bounded by requestTimeoutMs and halts'
   const err = afEvents(events).find((e) => e.status === 'error');
   assert.equal(err.id, 'script');
 });
+
+test('autoforge: real media outputs (stub:false) mark steps done and flow into render', async () => {
+  const dir = tmpDir();
+  let renderArgs = null;
+  const { deps } = baseDeps(dir, {
+    findStockFootage: async () => ({
+      stub: false,
+      provider: 'pexels',
+      count: 2,
+      shots: [
+        { file: 'autoforge/x/footage/clip-01.mp4', start: 0, end: 5, stub: false },
+        { file: 'autoforge/x/footage/clip-02.mp4', start: 5, end: 10, stub: false },
+      ],
+    }),
+    generateThumbnail: async ({ outPath }) => ({ thumbnail: outPath, format: 'png', stub: false }),
+  });
+  const origExecute = deps.executeTool;
+  deps.executeTool = async (name, argsRaw, ctx) => {
+    if (name === 'tts_synth') return { content: JSON.stringify({ audio: 'autoforge/x/voice.mp3', duration: 12, stub: false }) };
+    if (name === 'render_video') { renderArgs = JSON.parse(argsRaw); return { content: JSON.stringify({ video: 'autoforge/x/video.mp4', duration: 20, stub: false }) }; }
+    return origExecute(name, argsRaw, ctx);
+  };
+
+  const { events, emit } = collect();
+  const res = await runAutoForge({ idea: 'x', cfg: { model: 'm' }, emit, onQuestion: async () => UPLOAD_YES, deps });
+
+  assert.equal(res.ok, true);
+  // voice / footage / render / thumbnail all completed for real
+  assert.deepEqual(stepsCompleted(events).sort(), ['footage', 'idea', 'render', 'script', 'thumbnail', 'upload', 'voice'].sort());
+  // the render tool received the downloaded shot list + the voiceover
+  assert.ok(renderArgs, 'render_video was called');
+  assert.equal(renderArgs.shots.length, 2);
+  assert.equal(renderArgs.shots[0].file, 'autoforge/x/footage/clip-01.mp4');
+  assert.equal(renderArgs.audio, 'autoforge/x/voice.mp3');
+  // artifacts recorded the real outputs
+  assert.equal(res.artifacts.video, 'autoforge/x/video.mp4');
+  assert.equal(res.artifacts.voice, 'autoforge/x/voice.mp3');
+  assert.match(res.artifacts.thumbnail, /thumbnail\.png$/);
+});
