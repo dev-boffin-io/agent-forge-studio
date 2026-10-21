@@ -1,0 +1,16 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+process.env.YOUTUBE_STUDIO_HOME = '/tmp/ytstudio-test-extra';
+require('fs').mkdirSync('/tmp/ytws-extra', { recursive: true });
+require('../lib/config').setWorkDir('/tmp/ytws-extra');
+const tools = require('../lib/tools');
+const names = tools.TOOLS.map(t => t.name);
+assert.ok(names.includes('topic_discover'));
+assert.ok(names.includes('seo_generate'));
+assert.ok(names.includes('quality_score'));
+assert.ok(names.includes('tts_synth'));
+assert.ok(names.includes('captions_generate'));
+assert.ok(names.includes('render_video'));
+assert.ok(names.includes('yt_upload'));
+assert.ok(names.includes('yt_analytics'));
