@@ -298,7 +298,7 @@ async function handleApi(req, res, url) {
     try {
       if (!idea) { sseSend(res, 'error', { message: 'an idea is required to start Auto-Forge' }); sseSend(res, 'done', { text: '' }); res.end(); return; }
       const autoforge = require('./lib/autoforge');
-      const c = cfgLib.loadConfig();
+      const c = { ...cfgLib.loadConfig(), signal: controller.signal };
       // the human answers the upload gate through the shared question channel
       const onQuestion = async (question, options) => new Promise((resolve) => {
         const id = 'q_' + crypto.randomUUID().slice(0, 8);
