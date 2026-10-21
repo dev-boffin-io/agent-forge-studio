@@ -25,6 +25,11 @@
   "websearch": {
     "provider": "exa"
   },
+  "pexelsApiKey": "YOUR_PEXELS_API_KEY",
+  "workers": {
+    "tts": "http://127.0.0.1:8101",
+    "render": "http://127.0.0.1:8102"
+  },
   "skills": {
     "paths": []
   },
