@@ -54,6 +54,20 @@ function readBody(req) {
   });
 }
 
+/** Parse the Cookie header into a plain object (values are not decoded beyond URI decoding). */
+function parseCookies(req) {
+  const out = {};
+  const header = (req.headers && req.headers.cookie) || '';
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim();
+    if (!k) continue;
+    try { out[k] = decodeURIComponent(part.slice(i + 1).trim()); } catch { out[k] = part.slice(i + 1).trim(); }
+  }
+  return out;
+}
+
 function maskKey(k) {
   if (!k) return '';
   const s = String(k);
@@ -147,7 +161,11 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/youtube/connect' && method === 'POST') {
     const oauth = require('./lib/youtube/oauth');
-    const url = oauth.buildAuthUrl({ redirectUri: oauth.redirectUri(req) });
+    const state = oauth.createState();
+    // bind the flow to this browser: the signed state travels in an HttpOnly cookie and must
+    // match the `state` Google echoes back on the callback (CSRF protection).
+    res.setHeader('set-cookie', `yt_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/youtube/callback; Max-Age=600`);
+    const url = oauth.buildAuthUrl({ redirectUri: oauth.redirectUri(req), state });
     return json(res, 200, { ok: true, url });
   }
   if (p === '/api/youtube/status' && method === 'GET') {
@@ -165,6 +183,10 @@ async function handleApi(req, res, url) {
     const oauth = require('./lib/youtube/oauth');
     const code = url.searchParams.get('code');
     const err = url.searchParams.get('error');
+    const state = url.searchParams.get('state');
+    const cookieState = parseCookies(req).yt_oauth_state || '';
+    // clear the one-time cookie regardless of outcome
+    res.setHeader('set-cookie', 'yt_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/youtube/callback; Max-Age=0');
     const done = (status, html) => {
       res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
       res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>YouTube agent</title>
@@ -175,6 +197,11 @@ async function handleApi(req, res, url) {
 <p style="color:#aaa">${status === 200 ? 'Full studio scopes granted. You can close this tab and return to YouTube Forge Studio.' : escapeHtmlHtml(err || 'no code returned')}</p></div></body></html>`);
     };
     if (err) return done(400, err);
+    // CSRF: the state Google echoes must match the signed cookie this server handed out.
+    if (!state || !cookieState || state !== cookieState || !oauth.verifyState(state)) {
+      log.warn('youtube', 'OAuth callback rejected: state missing or mismatched (possible CSRF)');
+      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
+    }
     if (!code) return done(400, 'no authorization code in the callback');
     try {
       await oauth.exchangeCode(code, { redirectUri: oauth.redirectUri(req) });
@@ -479,4 +506,4 @@ if (require.main === module) {
   main().catch((e) => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { server, handleApi };
+module.exports = { server, handleApi, parseCookies };
