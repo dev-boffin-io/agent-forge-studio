@@ -419,10 +419,59 @@ async function handleApi(req, res, url) {
   return json(res, 404, { error: 'not found' });
 }
 
+// ---- localhost API hardening -----------------------------------------------------------------
+// The server holds powerful capabilities (run commands, edit files, upload to YouTube). It binds
+// to 127.0.0.1 by default, but a browser can still be tricked by DNS-rebinding or a cross-site
+// request into hitting it. So every /api/* and /auth/* request must prove it is same-origin:
+//   - Host header hostname must be a loopback name (or the explicitly configured bind host);
+//   - an Origin header, when present, must be an http(s) origin whose host is likewise allowed.
+// Requests that fail are rejected with 403 before any handler runs.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/** Hostnames explicitly permitted in addition to loopback (from --host/HOST, unless it is a wildcard bind). */
+function extraAllowedHosts() {
+  const set = new Set();
+  const h = String(HOST || '').trim().toLowerCase();
+  if (h && h !== '0.0.0.0' && h !== '::' && h !== '::0') set.add(h);
+  return set;
+}
+
+/** True when a raw Host header value (host[:port], may be IPv6) names an allowed host. */
+function hostAllowed(hostHeader, extra = extraAllowedHosts()) {
+  if (!hostHeader) return false;
+  let hostname = String(hostHeader).trim().toLowerCase();
+  if (hostname.startsWith('[')) {                      // IPv6 literal, e.g. [::1]:4312
+    const end = hostname.indexOf(']');
+    if (end >= 0) hostname = hostname.slice(0, end + 1);
+  } else {
+    const colon = hostname.lastIndexOf(':');
+    if (colon >= 0 && hostname.indexOf(':') === colon) hostname = hostname.slice(0, colon); // strip single :port
+  }
+  return LOOPBACK_HOSTS.has(hostname) || extra.has(hostname);
+}
+
+/** True when an Origin header value is an allowed http(s) origin. Empty origin is accepted (same-origin/non-CORS). */
+function originAllowed(origin, extra = extraAllowedHosts()) {
+  if (!origin) return true;
+  let u;
+  try { u = new URL(origin); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  return hostAllowed(u.host, extra);
+}
+
+/** The gate applied to /api/* and /auth/* before routing. Exported for tests. */
+function requestAllowed(headers = {}) {
+  return hostAllowed(headers.host) && originAllowed(headers.origin);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/')) {
+      if (!requestAllowed(req.headers)) {
+        log.warn('server', `rejected cross-origin ${req.method} ${url.pathname} (host=${req.headers.host || '-'} origin=${req.headers.origin || '-'})`);
+        return json(res, 403, { error: 'forbidden: request did not originate from the local app' });
+      }
       await handleApi(req, res, url);
       return;
     }
@@ -506,4 +555,4 @@ if (require.main === module) {
   main().catch((e) => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { server, handleApi, parseCookies };
+module.exports = { server, handleApi, requestAllowed, parseCookies, hostAllowed, originAllowed };
