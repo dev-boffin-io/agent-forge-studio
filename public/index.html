@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YouTube Forge Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/style.css?v=20261020i" />
+</head>
+<body>
+  <header class="topbar">
+    <button id="hamburgerBtn" class="btn ghost hamburger" aria-label="Open sessions and files" aria-expanded="false" title="Sessions &amp; files">☰</button>
+    <div class="brand">
+      <span class="logo">▶</span>
+      <div>
+        <h1>YouTube Forge Studio</h1>
+        <p class="sub"><span id="workDir" class="workdir" title="The channel workspace folder">…</span></p>
+      </div>
+    </div>
+    <button id="settingsBtn" class="btn ghost settings-toggle" aria-label="Toggle connection settings" aria-expanded="false" title="Connection settings">⚙</button>
+    <div class="conn" id="connBar">
+      <label class="conn-field" id="endpointField">Endpoint
+        <input id="endpoint" type="url" spellcheck="false" placeholder="http://localhost:11434" />
+        <span class="loadspinner" id="endpointSpin" hidden title="Loading models…"></span>
+      </label>
+      <button id="providersBtn" class="btn ghost" title="Manage providers (Ollama / OpenAI / Anthropic), API keys and YouTube agent credentials">Providers</button>
+      <label class="conn-field" id="modelField">Model
+        <div class="msel" id="modelSel">
+          <button type="button" class="msel-btn" id="modelBtn" aria-haspopup="listbox" aria-expanded="false" title="Pick the model">
+            <span class="msel-label" id="modelLabel">…</span><span class="msel-caret">▾</span>
+          </button>
+          <ul class="msel-menu" id="modelMenu" role="listbox" hidden></ul>
+        </div>
+      </label>
+      <button id="refreshModels" class="btn ghost" title="Reload models from all providers">↻</button>
+      <button id="statusBtn" class="btn ghost" title="Skills, commands, tools">Tools</button>
+      <button id="saveConfig" class="btn primary">Save</button>
+      <span id="connStatus" class="status">idle</span>
+      <span id="metricsBadge" class="status metrics" title="Last run: iterations / time" hidden></span>
+      <button id="quitBtn" class="btn ghost danger" title="Stop the studio server">Quit</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="drawer" id="drawer">
+      <div class="drawer-head">
+        <span class="drawer-title">Panels</span>
+        <button id="drawerClose" class="btn small ghost" type="button" aria-label="Close panels" title="Close panels">✕ Close</button>
+      </div>
+
+      <aside class="pane sessions" id="sessionsPane">
+        <div class="pane-head">
+          <h2>Sessions</h2>
+          <div class="row">
+            <button id="archivedBtn" class="btn small ghost" title="Show archived sessions">Archive</button>
+            <button id="newSession" class="btn small">+ New</button>
+            <button class="btn small ghost pane-close" data-close-pane="sessionsPane" aria-label="Close sessions" title="Close">✕</button>
+          </div>
+        </div>
+        <ul id="sessionList" class="list"></ul>
+      </aside>
+
+      <section class="pane files" id="filesPane">
+        <div class="pane-head">
+          <h2 id="filesTitle">Channel files</h2>
+          <div class="row">
+            <button id="refreshTree" class="btn small ghost">↻</button>
+            <button id="newFile" class="btn small">+ File</button>
+            <button class="btn small ghost pane-close" data-close-pane="filesPane" aria-label="Close files" title="Close">✕</button>
+          </div>
+        </div>
+        <ul id="tree" class="tree"></ul>
+      </section>
+    </div>
+
+    <section class="pane editor" id="editorPane">
+      <div class="pane-head">
+        <h2 id="editorTitle">No file open</h2>
+        <div class="row">
+          <span id="dirtyDot" class="dirty" title="Unsaved changes"></span>
+          <button id="saveFile" class="btn small primary" disabled>Save</button>
+          <button id="closeEditor" class="btn small ghost" aria-label="Close editor" title="Close editor">✕</button>
+        </div>
+      </div>
+      <textarea id="editor" spellcheck="false" placeholder="Select a file — scripts/, transcripts/, analytics/, packages/, plans/, voice.md — to view and edit it."></textarea>
+    </section>
+
+    <section class="pane chat">
+      <div class="pane-head">
+        <div class="row">
+          <h2>Agent</h2>
+          <select id="agent" title="create = full Studio agent, analyze = read-only, subagents via task tool"></select>
+        </div>
+        <div class="row">
+          <button id="openYtStudio" class="btn small ghost" title="Open the YouTube Studio panel">📺 Studio</button>
+          <button id="summariesBtn" class="btn small ghost" title="Session summary and export">Summary</button>
+        </div>
+      </div>
+      <div id="todos" class="todos" hidden></div>
+      <div id="messages" class="messages"></div>
+      <div id="cmdHint" class="cmdhint" hidden></div>
+      <div id="mobileStatusBar" class="mobile-status-bar" aria-live="polite">
+        <span id="mobileStatus" class="status">idle</span>
+        <span id="mobileMetrics" class="status metrics" hidden></span>
+      </div>
+      <form id="chatForm" class="composer">
+        <textarea id="prompt" rows="2" placeholder="What should this channel make next…  (/ for commands, Enter = send, Shift+Enter = newline)"></textarea>
+        <button id="send" class="btn primary" type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="panelBackdrop" class="panel-backdrop" hidden></div>
+
+  <dialog id="providersDlg" class="dlg">
+    <h3>Providers &amp; YouTube credentials</h3>
+    <p class="hint-line">Model refs look like <code>provider/model</code>. Ollama (API key optional), OpenAI, Anthropic or any OpenAI-compatible API work. Pick a <b>Preset</b> to fill the endpoint, then paste your API key.</p>
+    <div id="providerRows"></div>
+    <div class="row dlg-actions">
+      <button id="addProvider" class="btn small">+ Add provider</button>
+      <span class="spacer"></span>
+      <button id="providersCancel" class="btn small ghost">Cancel</button>
+      <button id="providersSave" class="btn small primary">Save</button>
+    </div>
+
+    <div class="yt-creds">
+      <h3>YouTube Agent Credentials</h3>
+      <p class="hint-line">Paste the Google OAuth <b>Client ID</b> &amp; <b>Client Secret</b> (Desktop app credentials), then press <b>Connect Agent</b>. The agent gets full studio scopes — upload, publish, edit visibility, manage videos.</p>
+      <div class="row yt-creds-row">
+        <input id="ytClientId" type="text" placeholder="Client ID (…apps.googleusercontent.com)" spellcheck="false" autocomplete="off" />
+        <input id="ytClientSecret" type="password" placeholder="Client Secret" spellcheck="false" autocomplete="off" />
+        <button id="saveYtCreds" class="btn small" type="button">Save keys</button>
+        <button id="connectAgent" class="btn small primary" type="button">Connect Agent</button>
+      </div>
+      <div id="ytAuthStatus" class="hint-line yt-creds-status"></div>
+    </div>
+  </dialog>
+
+  <aside id="ytStudioPanel" class="yt-studio-panel" hidden>
+    <div class="yt-studio-header">
+      <h3>YouTube Studio</h3>
+      <div class="row">
+        <a id="ytStudioNewTab" class="btn small ghost" href="https://studio.youtube.com" target="_blank" rel="noopener" title="Open YouTube Studio in a new tab">↗ New tab</a>
+        <button id="collapseYtStudio" class="btn small ghost" title="Collapse panel">–</button>
+        <button id="closeYtStudio" class="btn small ghost" title="Close panel">✕</button>
+      </div>
+    </div>
+    <div class="yt-studio-body" id="ytStudioBody">
+      <div id="ytStudioFallback" class="yt-studio-fallback">
+        <p><b>studio.youtube.com blocks being embedded</b> (X-Frame-Options), so the live Studio
+        cannot render inside this panel. Use the buttons below — the agent keeps working either way.</p>
+        <div class="row">
+          <a href="https://studio.youtube.com" target="_blank" rel="noopener" class="btn small">↗ Open Studio in a new tab</a>
+          <button id="launchBrowser" class="btn small primary" type="button" title="Opens a visible Chromium window the agent controls">🤖 Open automation window</button>
+        </div>
+        <p id="launchBrowserStatus" class="hint-line"></p>
+      </div>
+    </div>
+  </aside>
+
+  <dialog id="statusDlg" class="dlg">
+    <h3>Tools, skills &amp; commands</h3>
+    <div id="statusBody"></div>
+    <div class="row dlg-actions">
+      <span class="spacer"></span>
+      <button id="statusClose" class="btn small ghost">Close</button>
+    </div>
+  </dialog>
+
+  <div id="ctxMenu" class="ctxmenu" hidden></div>
+
+  <dialog id="editDlg" class="dlg">
+    <h3 id="editTitle">Edit message</h3>
+    <textarea id="editText" rows="10" spellcheck="false"></textarea>
+    <div class="row dlg-actions">
+      <span id="editNote" class="hint-line"></span>
+      <span class="spacer"></span>
+      <button id="editCancel" class="btn small ghost" type="button">Cancel</button>
+      <button id="editSave" class="btn small primary" type="button">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="summariesDlg" class="dlg">
+    <h3>Session summary</h3>
+    <div id="summariesBody"></div>
+    <div class="row dlg-actions">
+      <button id="exportFromSummaries" class="btn small">Export full session (.md)</button>
+      <span class="spacer"></span>
+      <button id="summariesClose" class="btn small ghost">Close</button>
+    </div>
+  </dialog>
+
+  <script src="/markdown.js?v=20261020i"></script>
+  <script src="/app.js?v=20261020i"></script>
+</body>
+</html>
