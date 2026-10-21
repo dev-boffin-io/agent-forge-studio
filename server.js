@@ -287,6 +287,38 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ---- auto-forge (one-click end-to-end workflow, SSE) ----
+  if (p === '/api/workflow/autoforge' && method === 'POST') {
+    const body = await readBody(req);
+    const idea = String(body.idea || '').trim();
+    sseStart(res);
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+    const emit = (event, data) => sseSend(res, event, data);
+    try {
+      if (!idea) { sseSend(res, 'error', { message: 'an idea is required to start Auto-Forge' }); sseSend(res, 'done', { text: '' }); res.end(); return; }
+      const autoforge = require('./lib/autoforge');
+      const c = cfgLib.loadConfig();
+      // the human answers the upload gate through the shared question channel
+      const onQuestion = async (question, options) => new Promise((resolve) => {
+        const id = 'q_' + crypto.randomUUID().slice(0, 8);
+        pending.set(id, resolve);
+        sseSend(res, 'question', { id, question, options });
+        setTimeout(() => { if (pending.has(id)) { pending.delete(id); resolve(''); } }, 600000);
+      });
+      const result = await autoforge.runAutoForge({ idea, cfg: c, emit, signal: controller.signal, onQuestion });
+      if (!result.ok) {
+        sseSend(res, 'error', { message: `Error in Auto-Forge step "${result.failedStep}"`, failedStep: result.failedStep });
+      }
+    } catch (e) {
+      log.error('server', 'autoforge failed', e);
+      sseSend(res, 'error', { message: explain(e) });
+    }
+    sseSend(res, 'done', { text: '' });
+    res.end();
+    return;
+  }
+
   // ---- interactive answers ----
   if (p === '/api/answer' && method === 'POST') {
     const body = await readBody(req);
