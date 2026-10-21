@@ -141,3 +141,24 @@ test('autoforge: no answer to the gate means no upload', async () => {
   assert.equal(res.uploaded, null);
   assert.equal(uploadCalled, false);
 });
+
+test('autoforge: a hanging script step is bounded by requestTimeoutMs and halts', async () => {
+  const dir = tmpDir();
+  // simulate the real llm.sendChat: the script step passes timeoutMs, so a hang aborts
+  const { deps } = baseDeps(dir, {
+    sendChat: (provider, opts) => new Promise((_res, rej) => {
+      const ms = opts.timeoutMs || 600000;
+      const timer = setTimeout(() => rej(Object.assign(new Error('request timed out'), { name: 'TimeoutError', code: 'ETIMEDOUT' })), ms);
+      if (opts.signal) opts.signal.addEventListener('abort', () => { clearTimeout(timer); rej(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    }),
+  });
+  const { events, emit } = collect();
+  const t0 = Date.now();
+  const res = await runAutoForge({ idea: 'x', cfg: { model: 'm', requestTimeoutMs: 100 }, emit, onQuestion: async () => UPLOAD_YES, deps });
+  const dt = Date.now() - t0;
+  assert.equal(res.ok, false);
+  assert.equal(res.failedStep, 'script');
+  assert.ok(dt < 3000, `script step should be bounded, took ${dt}ms`);
+  const err = afEvents(events).find((e) => e.status === 'error');
+  assert.equal(err.id, 'script');
+});
