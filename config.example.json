@@ -48,7 +48,7 @@
       "ffmpeg *": "ask",
       "rm *": "deny"
     },
-    "publish": "allow",
+    "publish": "ask",
     "browser": "allow"
   },
   "instructions": [],
