@@ -25,7 +25,7 @@ Key fields:
 
 ## Features
 - Real agent loop with tool calling (no mock). Deterministic analyzers: hook_score, title_lint, edit_list, chapters_from_transcript, retention_read, viral_rank.
-- Voice-aware agent that reads `voice.md` from the channel workspace.
+- Voice-aware agent that reads `voice.md` from the channel workspace (start from `templates/voice.md`).
 - Slash commands map to skills (`/script`, `/plan`, `/retention`, etc).
 - Sessions, SSE streaming, permission gating, compaction.
 - One folder per channel: `~/.ytstudio/<channel>-<hash>/` for sessions/outputs, channel workspace for content (`scripts/`, `transcripts/`, `analytics/`, `packages/`, `plans/`).
