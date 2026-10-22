@@ -5,3 +5,20 @@ workspace/*
 node_modules/
 *.log
 dist/
+# generated media artifacts
+*.mp4
+*.webm
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.ogv
+autoforge/
+workers/*/autoforge/
+workers/*/final_video*
+workers/*/*TEMP_MPY*
