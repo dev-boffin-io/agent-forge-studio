@@ -1,9 +1,9 @@
 {
-  "name": "youtube-forge-studio",
+  "name": "agent-forge-studio",
   "version": "1.0.0",
   "private": true,
   "license": "MIT",
-  "description": "Agentic YouTube studio for any Ollama endpoint: scripts off 21 hook formulas, title/thumbnail linting, edit decision lists, retention reading, Shorts cutting and niche research. Zero runtime dependencies.",
+  "description": "Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint: research, planning, content creation, scripts, editing, multi-platform management (YouTube, Instagram, Facebook, Google), browser automation, and GitHub skills hub.",
   "type": "commonjs",
   "main": "server.js",
   "engines": {
@@ -17,7 +17,7 @@
     "test": "node --test \"test/**/*.test.js\""
   },
   "bin": {
-    "youtube-forge-studio": "server.js",
+    "agent-forge-studio": "server.js",
     "yt-studio": "server.js"
   },
   "dependencies": {

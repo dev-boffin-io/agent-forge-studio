@@ -1,10 +1,10 @@
-# youtube-forge-studio
+# agent-forge-studio
 
-Agentic YouTube studio for any Ollama endpoint — scripts, title/thumbnail linting, edit decision lists, retention reading, niche research, and direct channel operation. One dependency: Playwright (only loaded when the browser tools are used).
+Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint — research, planning, content creation, scripts, edit decision lists, retention reading, niche research, browser automation, and direct multi-platform operation across YouTube, Instagram, Facebook, and Google. Install GitHub skills on demand. One dependency: Playwright (only loaded when the browser tools are used).
 
 ## Quick start
 1. Start Ollama (or any OpenAI-compatible server).
-2. Run `npx --yes youtube-forge-studio` or `node server.js --dir /your/channel`.
+2. Run `npx --yes agent-forge-studio` or `node server.js --dir /your/channel`.
 3. Open the browser UI, pick a model, and start a session. The default agent `create` writes files to your channel workspace; `analyze` is read-only.
 
 ## Configuration
@@ -29,7 +29,7 @@ Key fields:
 - Slash commands map to skills (`/script`, `/plan`, `/retention`, etc).
 - Sessions, SSE streaming, permission gating, compaction.
 - One folder per channel: `~/.ytstudio/<channel>-<hash>/` for sessions/outputs, channel workspace for content (`scripts/`, `transcripts/`, `analytics/`, `packages/`, `plans/`).
-- YouTube Studio Agent: upload (`yt_upload`), set visibility (`yt_set_visibility`), list videos and read stats via the Data API — no confirmation beyond the permission gate.
+- Multi-platform operation: upload videos/posts (YouTube, Instagram, Facebook), manage visibility/settings, and read stats. YouTube uses Data API; others can use APIs or browser automation.
 - Browser Automation Skill (`skills/yt-browser`): the agent drives a **visible** Chromium window on the real Studio UI — navigate, snapshot the page, click, type, upload files like a human, with the login persisted in `~/.ytstudio/<channel>/browser/youtube.auth.json`. Install browsers once with `npx playwright install chromium`.
 
 ## Notes
