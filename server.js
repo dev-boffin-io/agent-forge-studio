@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// youtube-forge-studio server — zero-dependency HTTP + SSE around the agent loop.
+// agent-forge-studio server — zero-dependency HTTP + SSE around the agent loop.
 // Serves the browser UI, the session/file/agent APIs, and streams agent runs as SSE events.
 
 const http = require('node:http');
@@ -96,6 +96,42 @@ function publicConfig() {
       scopes: yt.SCOPES,
     };
   } catch (e) { /* ignore */ }
+  try {
+    const ig = require('./lib/instagram');
+    const c2 = cfgLib.loadConfig();
+    out.instagram = {
+      clientId: (c2.instagram && c2.instagram.clientId) || '',
+      clientSecretMasked: maskKey(c2.instagram && c2.instagram.clientSecret),
+      redirectUri: (c2.instagram && c2.instagram.redirectUri) || '',
+      hasCredentials: ig.hasCredentials(c2),
+      hasToken: !!ig.loadToken(),
+      scopes: ig.SCOPES,
+    };
+  } catch (e) { /* ignore */ }
+  try {
+    const fb = require('./lib/facebook');
+    const c2 = cfgLib.loadConfig();
+    out.facebook = {
+      clientId: (c2.facebook && c2.facebook.clientId) || '',
+      clientSecretMasked: maskKey(c2.facebook && c2.facebook.clientSecret),
+      redirectUri: (c2.facebook && c2.facebook.redirectUri) || '',
+      hasCredentials: fb.hasCredentials(c2),
+      hasToken: !!fb.loadToken(),
+      scopes: fb.SCOPES,
+    };
+  } catch (e) { /* ignore */ }
+  try {
+    const g = require('./lib/google');
+    const c2 = cfgLib.loadConfig();
+    out.google = {
+      clientId: (c2.google && c2.google.clientId) || '',
+      clientSecretMasked: maskKey(c2.google && c2.google.clientSecret),
+      redirectUri: (c2.google && c2.google.redirectUri) || '',
+      hasCredentials: g.hasCredentials(c2),
+      hasToken: !!g.loadToken(),
+      scopes: g.SCOPES,
+    };
+  } catch (e) { /* ignore */ }
   return out;
 }
 
@@ -159,6 +195,42 @@ async function handleApi(req, res, url) {
     cfgLib.saveConfig(patch);
     return json(res, 200, publicConfig());
   }
+  if (p === '/api/instagram/credentials' && method === 'POST') {
+    const body = await readBody(req);
+    const patch = {
+      instagram: {
+        clientId: String(body.clientId || '').trim(),
+        clientSecret: String(body.clientSecret || '').trim(),
+        redirectUri: String(body.redirectUri || '').trim(),
+      }
+    };
+    cfgLib.saveConfig(patch);
+    return json(res, 200, publicConfig());
+  }
+  if (p === '/api/facebook/credentials' && method === 'POST') {
+    const body = await readBody(req);
+    const patch = {
+      facebook: {
+        clientId: String(body.clientId || '').trim(),
+        clientSecret: String(body.clientSecret || '').trim(),
+        redirectUri: String(body.redirectUri || '').trim(),
+      }
+    };
+    cfgLib.saveConfig(patch);
+    return json(res, 200, publicConfig());
+  }
+  if (p === '/api/google/credentials' && method === 'POST') {
+    const body = await readBody(req);
+    const patch = {
+      google: {
+        clientId: String(body.clientId || '').trim(),
+        clientSecret: String(body.clientSecret || '').trim(),
+        redirectUri: String(body.redirectUri || '').trim(),
+      }
+    };
+    cfgLib.saveConfig(patch);
+    return json(res, 200, publicConfig());
+  }
   if (p === '/api/youtube/connect' && method === 'POST') {
     const oauth = require('./lib/youtube/oauth');
     const state = oauth.createState();
@@ -189,12 +261,12 @@ async function handleApi(req, res, url) {
     res.setHeader('set-cookie', 'yt_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/youtube/callback; Max-Age=0');
     const done = (status, html) => {
       res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>YouTube agent</title>
+      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
 <style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
 .card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
 .ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
 <body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>YouTube agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
-<p style="color:#aaa">${status === 200 ? 'Full studio scopes granted. You can close this tab and return to YouTube Forge Studio.' : escapeHtmlHtml(err || 'no code returned')}</p></div></body></html>`);
+<p style="color:#aaa">${status === 200 ? 'Full studio scopes granted. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(err || 'no code returned')}</p></div></body></html>`);
     };
     if (err) return done(400, err);
     // CSRF: the state Google echoes must match the signed cookie this server handed out.
@@ -362,6 +434,81 @@ async function handleApi(req, res, url) {
   if (p === '/api/skills' && method === 'GET') return json(res, 200, { skills: skillsLib.listSkills() });
   if (p === '/api/commands' && method === 'GET') return json(res, 200, { commands: Object.values(commandsLib.listCommands()) });
 
+  // ---- GitHub skill hub ----
+  if (p === '/api/skills/discover' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    try {
+      const data = await hub.discoverSkills(url.searchParams.get('q') || '', { limit: Number(url.searchParams.get('limit')) || 10 });
+      return json(res, 200, { ok: true, ...data, installed: hub.installedSkills() });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message, repos: [] });
+    }
+  }
+  if (p === '/api/skills/repo' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    const source = url.searchParams.get('source') || '';
+    try {
+      return json(res, 200, { ok: true, ...(await hub.listGitHubSkills(source)) });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message, skills: [] });
+    }
+  }
+  if (p === '/api/skills/install' && method === 'POST') {
+    const body = await readBody(req);
+    const hub = require('./lib/skillhub');
+    try {
+      const out = await hub.installSkill(String(body.source || ''), {
+        id: body.id ? String(body.id) : undefined,
+        path: body.path ? String(body.path) : undefined,
+        all: !!body.all,
+        force: !!body.force,
+      });
+      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message, skills: skillsLib.listSkills() });
+    }
+  }
+  if (p === '/api/skills/uninstall' && method === 'POST') {
+    const body = await readBody(req);
+    const hub = require('./lib/skillhub');
+    try {
+      const out = hub.uninstallSkill(String(body.id || ''));
+      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message });
+    }
+  }
+  if (p === '/api/skills/installed' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    return json(res, 200, { installed: hub.installedSkills(), skills: skillsLib.listSkills() });
+  }
+
+  // ---- open-web research / download (also available through the CLI) ----
+  if (p === '/api/research' && method === 'GET') {
+    const webLib = require('./lib/web');
+    const q = url.searchParams.get('q') || '';
+    try {
+      return json(res, 200, { ok: true, ...(await webLib.research(q, { count: Number(url.searchParams.get('count')) || 8, fetchCount: Number(url.searchParams.get('fetch')) || 4 })) });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message, results: [] });
+    }
+  }
+  if (p === '/api/download' && method === 'POST') {
+    const body = await readBody(req);
+    const webLib = require('./lib/web');
+    try {
+      const dest = String(body.path || '').replace(/\\/g, '/');
+      const out = await webLib.downloadUrl(String(body.url || ''), {
+        destDir: dest ? (require('node:path').posix.dirname(dest) === '.' ? '' : require('node:path').posix.dirname(dest)) : undefined,
+        filename: dest ? require('node:path').posix.basename(dest) : body.filename,
+        overwrite: !!body.overwrite,
+      });
+      return json(res, 200, out);
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message });
+    }
+  }
+
   // ---- files ----
   if (p === '/api/files' && method === 'GET') {
     const dirPath = url.searchParams.get('path') || '.';
@@ -508,9 +655,9 @@ function parseArgs(argv) {
   return out;
 }
 
-const HELP = `youtube-forge-studio — agentic YouTube studio for Ollama & OpenAI-compatible APIs
+const HELP = `agent-forge-studio — agentic YouTube studio for Ollama & OpenAI-compatible APIs
 
-Usage: youtube-forge-studio [options]
+Usage: agent-forge-studio [options]
 
 Options:
   -d, --dir <path>     channel workspace directory (default: cwd)
@@ -520,13 +667,35 @@ Options:
   -v, --version        print version
   -h, --help           this help
 
+Command line (no UI):
+  agent-forge-studio run "<task>"          one agent task
+  agent-forge-studio chat                  interactive agent session
+  agent-forge-studio research "<query>"    search + read the web
+  agent-forge-studio download <url> [path]
+  agent-forge-studio skills list|search|repo|install|remove
+  agent-forge-studio browser open|snapshot|navigate|download|close
+  Run "agent-forge-studio help" for the full CLI help.
+
 Environment:
   YOUTUBE_STUDIO_HOME  studio data root (default ~/.ytstudio)
   PORT, HOST           same as --port/--host
+  GITHUB_TOKEN         optional: higher GitHub API limits for skill discovery
 `;
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const cli = require('./lib/cli');
+  if (cli.handles(argv)) {
+    try {
+      await cli.run(argv);
+      return;
+    } catch (e) {
+      console.error(e.message || e);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const args = parseArgs(argv);
   if (args.help) { process.stdout.write(HELP); return; }
   if (args.version) {
     let ver = '1.0.0';
@@ -543,7 +712,7 @@ async function main() {
   });
   const where = `http://${args.host}:${server.address().port}`;
   log.info('server', `listening on ${where} (workspace: ${cfgLib.getWorkDir()})`);
-  console.log(`youtube-forge-studio  →  ${where}`);
+  console.log(`agent-forge-studio  →  ${where}`);
   console.log(`workspace             →  ${cfgLib.getWorkDir()}`);
   if (args.open) {
     const cmd = process.platform === 'darwin' ? `open ${where}` : process.platform === 'win32' ? `start ${where}` : `xdg-open ${where} 2>/dev/null || true`;
