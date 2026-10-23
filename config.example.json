@@ -23,7 +23,7 @@
     }
   },
   "websearch": {
-    "provider": "exa"
+    "provider": "ddg"
   },
   "pexelsApiKey": "YOUR_PEXELS_API_KEY",
   "pixabayApiKey": "YOUR_PIXABAY_API_KEY",
