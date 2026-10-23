@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>YouTube Forge Studio</title>
+  <title>Agent Forge Studio</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/style.css?v=20261021a" />
 </head>
@@ -11,9 +11,9 @@
   <header class="topbar">
     <button id="hamburgerBtn" class="btn ghost hamburger" aria-label="Open sessions and files" aria-expanded="false" title="Sessions &amp; files">☰</button>
     <div class="brand">
-      <span class="logo">▶</span>
+      <span class="logo" aria-hidden="true"><img src="/favicon.svg" alt="" width="30" height="30" /></span>
       <div>
-        <h1>YouTube Forge Studio</h1>
+        <h1>Agent Forge Studio</h1>
         <p class="sub"><span id="workDir" class="workdir" title="The channel workspace folder">…</span></p>
       </div>
     </div>
@@ -23,7 +23,7 @@
         <input id="endpoint" type="url" spellcheck="false" placeholder="http://localhost:11434" />
         <span class="loadspinner" id="endpointSpin" hidden title="Loading models…"></span>
       </label>
-      <button id="providersBtn" class="btn ghost" title="Manage providers (Ollama / OpenAI / Anthropic), API keys and YouTube agent credentials">Providers</button>
+      <button id="providersBtn" class="btn ghost" title="Manage providers (Ollama / OpenAI / Anthropic), API keys and multi-platform agent credentials">Providers</button>
       <label class="conn-field" id="modelField">Model
         <div class="msel" id="modelSel">
           <button type="button" class="msel-btn" id="modelBtn" aria-haspopup="listbox" aria-expanded="false" title="Pick the model">
@@ -122,7 +122,7 @@
   <div id="panelBackdrop" class="panel-backdrop" hidden></div>
 
   <dialog id="providersDlg" class="dlg">
-    <h3>Providers &amp; YouTube credentials</h3>
+    <h3>Providers &amp; Platform credentials</h3>
     <p class="hint-line">Model refs look like <code>provider/model</code>. Ollama (API key optional), OpenAI, Anthropic or any OpenAI-compatible API work. Pick a <b>Preset</b> to fill the endpoint, then paste your API key.</p>
     <div id="providerRows"></div>
     <div class="row dlg-actions">
@@ -142,6 +142,42 @@
         <button id="connectAgent" class="btn small primary" type="button">Connect Agent</button>
       </div>
       <div id="ytAuthStatus" class="hint-line yt-creds-status"></div>
+    </div>
+
+    <div class="yt-creds">
+      <h3>Instagram Agent Credentials</h3>
+      <p class="hint-line">Paste your Meta Instagram OAuth <b>Client ID</b> &amp; <b>Client Secret</b> to manage Instagram content from the same interface.</p>
+      <div class="row yt-creds-row">
+        <input id="igClientId" type="text" placeholder="Client ID" spellcheck="false" autocomplete="off" />
+        <input id="igClientSecret" type="password" placeholder="Client Secret" spellcheck="false" autocomplete="off" />
+        <button id="saveIgCreds" class="btn small" type="button">Save keys</button>
+        <button id="connectIgAgent" class="btn small primary" type="button" disabled>Connect Agent</button>
+      </div>
+      <div id="igAuthStatus" class="hint-line yt-creds-status"></div>
+    </div>
+
+    <div class="yt-creds">
+      <h3>Facebook Agent Credentials</h3>
+      <p class="hint-line">Paste your Meta Facebook OAuth <b>Client ID</b> &amp; <b>Client Secret</b> to manage Facebook content from the same interface.</p>
+      <div class="row yt-creds-row">
+        <input id="fbClientId" type="text" placeholder="Client ID" spellcheck="false" autocomplete="off" />
+        <input id="fbClientSecret" type="password" placeholder="Client Secret" spellcheck="false" autocomplete="off" />
+        <button id="saveFbCreds" class="btn small" type="button">Save keys</button>
+        <button id="connectFbAgent" class="btn small primary" type="button" disabled>Connect Agent</button>
+      </div>
+      <div id="fbAuthStatus" class="hint-line yt-creds-status"></div>
+    </div>
+
+    <div class="yt-creds">
+      <h3>Google Agent Credentials</h3>
+      <p class="hint-line">Paste your Google OAuth <b>Client ID</b> &amp; <b>Client Secret</b> to manage Google services from the same interface.</p>
+      <div class="row yt-creds-row">
+        <input id="gClientId" type="text" placeholder="Client ID (…apps.googleusercontent.com)" spellcheck="false" autocomplete="off" />
+        <input id="gClientSecret" type="password" placeholder="Client Secret" spellcheck="false" autocomplete="off" />
+        <button id="saveGCreds" class="btn small" type="button">Save keys</button>
+        <button id="connectGAgent" class="btn small primary" type="button" disabled>Connect Agent</button>
+      </div>
+      <div id="gAuthStatus" class="hint-line yt-creds-status"></div>
     </div>
   </dialog>
 
@@ -170,6 +206,19 @@
   <dialog id="statusDlg" class="dlg">
     <h3>Tools, skills &amp; commands</h3>
     <div id="statusBody"></div>
+    <div class="tsection skillhub" id="skillHub">
+      <h4>Install skills from GitHub</h4>
+      <div class="skillhub-row">
+        <input id="skillQuery" type="search" placeholder="Search GitHub for agent skills…" spellcheck="false" autocomplete="off" />
+        <button id="skillSearch" class="btn small" type="button">Search</button>
+      </div>
+      <div class="skillhub-row">
+        <input id="skillSource" type="text" placeholder="owner/repo[/path] or github.com URL" spellcheck="false" autocomplete="off" />
+        <button id="skillInstall" class="btn small primary" type="button">Install</button>
+      </div>
+      <div id="skillHubStatus" class="hint-line"></div>
+      <div id="skillResults" class="skill-results"></div>
+    </div>
     <div class="row dlg-actions">
       <span class="spacer"></span>
       <button id="statusClose" class="btn small ghost">Close</button>

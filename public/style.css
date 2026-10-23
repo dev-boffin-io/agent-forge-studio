@@ -1,4 +1,4 @@
-/* youtube-forge-studio — dark, YouTube-flavoured (black/graphite + signal red) */
+/* agent-forge-studio — dark, YouTube-flavoured (black/graphite + signal red) */
 
 :root {
   --bg: #0f0f0f;
@@ -42,12 +42,12 @@ body {
 .brand { display: flex; align-items: center; gap: 10px; min-width: 240px; }
 .logo {
   display: grid; place-items: center;
-  width: 34px; height: 24px;
-  background: var(--accent);
-  color: #fff; font-size: 13px;
-  border-radius: 6px;
-  letter-spacing: -2px;
+  width: 30px; height: 30px;
+  background: transparent;
+  border-radius: 8px;
+  filter: drop-shadow(0 0 8px rgba(34, 211, 238, .28));
 }
+.logo img { display: block; width: 30px; height: 30px; }
 .brand h1 { font-size: 15px; margin: 0; font-weight: 650; }
 .sub { margin: 0; }
 .workdir { color: var(--dim); font-size: 11.5px; cursor: pointer; font-family: var(--mono); }
@@ -449,6 +449,27 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
   color: var(--dim);
 }
 .tchip b { color: var(--text); font-weight: 600; }
+
+/* GitHub skill hub */
+.skillhub { border-top: 1px solid var(--line); padding-top: 12px; }
+.skillhub-row { display: flex; gap: 6px; margin-bottom: 7px; }
+.skillhub-row input { flex: 1; font-family: var(--mono); font-size: 12px; }
+.skill-results { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 42vh; overflow: auto; }
+.skill-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--line); background: var(--bg3); border-radius: 8px; padding: 8px 10px;
+}
+.skill-row-main { min-width: 0; }
+.skill-row-main b { font-size: 12.5px; }
+.skill-desc { color: var(--dim); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.skill-id { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+.skill-stars { color: var(--warn); font-size: 11px; }
+.skill-repo-head { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; }
+.skill-repo-head .btn { margin-left: auto; }
+.skill-installed { color: var(--ok); font-size: 11.5px; }
+#skillHubStatus.busy { color: var(--warn); }
+#skillHubStatus.ok { color: var(--ok); }
+#skillHubStatus.bad { color: var(--err); }
 
 /* context menu */
 .ctxmenu {

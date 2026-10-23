@@ -1,6 +1,6 @@
 'use strict';
 
-/* youtube-forge-studio — browser client.
+/* agent-forge-studio — browser client.
    Talks to server.js: /api/config, /api/models, /api/sessions (+ /run SSE), /api/files, /api/file,
    /api/agents|skills|commands, /api/youtube/*, /api/answer. */
 
@@ -12,6 +12,7 @@ const state = {
   activeFile: null, streaming: false, abortController: null,
   messages: [], archivedView: false,
   modelOptions: [],                // [{ref, name, provider, providerType, parameterSize, error}]
+  installedSkills: [],             // GitHub-installed skills with their source metadata
 };
 
 /* ---------- helpers ---------- */
@@ -83,6 +84,27 @@ async function loadConfig() {
   state.model = state.config.model || '';
   state.workDir = state.config.workDir || state.workDir;
   fillYtCreds(state.config.youtube || {});
+  try {
+    const ig = state.config.instagram || {};
+    $('igClientId').value = ig.clientId || '';
+    if ($('igClientSecret')) $('igClientSecret').value = ig.clientSecretMasked || '';
+    const igs = $('igAuthStatus');
+    if (igs) { if (ig.hasToken) igs.textContent = '✓ Connected'; else if (ig.hasCredentials) igs.textContent = 'Credentials saved'; else igs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
+  try {
+    const fb = state.config.facebook || {};
+    $('fbClientId').value = fb.clientId || '';
+    if ($('fbClientSecret')) $('fbClientSecret').value = fb.clientSecretMasked || '';
+    const fbs = $('fbAuthStatus');
+    if (fbs) { if (fb.hasToken) fbs.textContent = '✓ Connected'; else if (fb.hasCredentials) fbs.textContent = 'Credentials saved'; else fbs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
+  try {
+    const g = state.config.google || {};
+    $('gClientId').value = g.clientId || '';
+    if ($('gClientSecret')) $('gClientSecret').value = g.clientSecretMasked || '';
+    const gs = $('gAuthStatus');
+    if (gs) { if (g.hasToken) gs.textContent = '✓ Connected'; else if (g.hasCredentials) gs.textContent = 'Credentials saved'; else gs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
 }
 
 function showWorkDir() {
@@ -964,6 +986,27 @@ function openProviders() {
     Object.entries(c.providers || {}).map(([id, p]) => providerRowHtml(id, p, false)).join('');
   bindProviderRows();
   fillYtCreds(c.youtube || {});
+  try {
+    const ig = c.instagram || {};
+    $('igClientId').value = ig.clientId || '';
+    if ($('igClientSecret')) $('igClientSecret').value = ig.clientSecretMasked || '';
+    const igs = $('igAuthStatus');
+    if (igs) { if (ig.hasToken) igs.textContent = '✓ Connected'; else if (ig.hasCredentials) igs.textContent = 'Credentials saved'; else igs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
+  try {
+    const fb = c.facebook || {};
+    $('fbClientId').value = fb.clientId || '';
+    if ($('fbClientSecret')) $('fbClientSecret').value = fb.clientSecretMasked || '';
+    const fbs = $('fbAuthStatus');
+    if (fbs) { if (fb.hasToken) fbs.textContent = '✓ Connected'; else if (fb.hasCredentials) fbs.textContent = 'Credentials saved'; else fbs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
+  try {
+    const g = c.google || {};
+    $('gClientId').value = g.clientId || '';
+    if ($('gClientSecret')) $('gClientSecret').value = g.clientSecretMasked || '';
+    const gs = $('gAuthStatus');
+    if (gs) { if (g.hasToken) gs.textContent = '✓ Connected'; else if (g.hasCredentials) gs.textContent = 'Credentials saved'; else gs.textContent = 'Add Client ID & Secret, save keys'; }
+  } catch {}
   refreshYtStatus();
   $('providersDlg').showModal();
 }
@@ -1136,9 +1179,7 @@ async function openStatus() {
     const skills = st.skills || [];
     const commands = cmds.commands || [];
     $('statusBody').innerHTML =
-      '<div class="tsection"><h4>Skills</h4><div class="tlist">' +
-      (skills.length ? skills.map((s) => `<span class="tchip" title="${escapeHtml(s.description || '')}"><b>${escapeHtml(s.name)}</b></span>`).join('') : '<span class="hint-line">none</span>') +
-      '</div></div>' +
+      '<div class="tsection"><h4>Skills</h4><div id="installedSkillsList" class="tlist">' + skillChips(skills) + '</div></div>' +
       '<div class="tsection"><h4>Commands</h4><div class="tlist">' +
       (commands.length ? commands.map((c) => `<span class="tchip" title="${escapeHtml(c.description || '')}"><b>/${escapeHtml(c.name)}</b></span>`).join('') : '<span class="hint-line">none</span>') +
       '</div></div>' +
@@ -1146,6 +1187,122 @@ async function openStatus() {
       state.agents.map((a) => `<span class="tchip"><b>${escapeHtml(a.id)}</b> ${a.subagent ? 'subagent' : 'primary'}${a.voice ? ' · voice' : ''}</span>`).join('') +
       '</div></div>';
   } catch (err) { $('statusBody').textContent = err.message; }
+}
+
+function skillChips(skills) {
+  return skills.length
+    ? skills.map((s) => `<span class="tchip" title="${escapeHtml(s.description || '')}"><b>${escapeHtml(s.name)}</b></span>`).join('')
+    : '<span class="hint-line">none</span>';
+}
+
+function skillHubStatus(text, cls = '') {
+  const el = $('skillHubStatus');
+  if (el) { el.textContent = text; el.className = 'hint-line' + (cls ? ' ' + cls : ''); }
+}
+
+function skillRepoHtml(r) {
+  return `<div class="skill-row"><div class="skill-row-main"><b>${escapeHtml(r.fullName || r.repo || '')}</b>` +
+    `${r.stars != null ? ` <span class="skill-stars">★ ${Number(r.stars).toLocaleString()}</span>` : ''}` +
+    `<div class="skill-desc">${escapeHtml(r.description || '')}</div></div>` +
+    `<button class="btn small ghost" type="button" data-skill-action="browse" data-source="${escapeHtml(r.fullName || r.url || '')}">Browse</button></div>`;
+}
+
+function skillItemHtml(s, source) {
+  const installed = (state.installedSkills || []).some((i) => i.id === s.id);
+  return `<div class="skill-row"><div class="skill-row-main"><b>${escapeHtml(s.name || s.id)}</b> <span class="skill-id">${escapeHtml(s.id)}</span>` +
+    `<div class="skill-desc">${escapeHtml(s.description || s.path || '')}</div></div>` +
+    (installed
+      ? `<button class="btn small ghost" type="button" data-skill-action="remove" data-id="${escapeHtml(s.id)}">Remove</button>`
+      : `<button class="btn small primary" type="button" data-skill-action="install" data-source="${escapeHtml(source)}" data-path="${escapeHtml(s.path || '')}" data-id="${escapeHtml(s.id)}">Install</button>`) +
+    '</div>';
+}
+
+async function searchGitHubSkills() {
+  const q = $('skillQuery').value.trim();
+  skillHubStatus(q ? `Searching GitHub for “${q}”…` : 'Loading featured skill repositories…', 'busy');
+  const res = await api('/api/skills/discover?q=' + encodeURIComponent(q) + '&limit=12');
+  state.installedSkills = res.installed || state.installedSkills || [];
+  if (!res.ok) { skillHubStatus(res.error || 'search failed', 'bad'); return; }
+  const repos = res.repos || [];
+  $('skillResults').innerHTML = repos.length
+    ? repos.map(skillRepoHtml).join('')
+    : '<div class="hint-line">No repositories found. Try another search.</div>';
+  skillHubStatus(`${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'} — pick one to browse its skills.`, 'ok');
+}
+
+async function browseSkillRepo(source) {
+  if (!source) return;
+  skillHubStatus(`Reading ${source}…`, 'busy');
+  const res = await api('/api/skills/repo?source=' + encodeURIComponent(source));
+  if (!res.ok) { skillHubStatus(res.error || 'could not read repository', 'bad'); return; }
+  const skills = res.skills || [];
+  $('skillResults').innerHTML =
+    `<div class="skill-repo-head"><b>${escapeHtml(res.repo || source)}</b> <span class="skill-id">@ ${escapeHtml(res.ref || '')}</span>` +
+    (skills.length > 1 ? `<button class="btn small ghost" type="button" data-skill-action="install-all" data-source="${escapeHtml(source)}">Install all</button>` : '') +
+    '</div>' +
+    (skills.length ? skills.map((s) => skillItemHtml(s, source)).join('') : '<div class="hint-line">No SKILL.md files found.</div>');
+  skillHubStatus(`${skills.length} skill${skills.length === 1 ? '' : 's'} found.`, 'ok');
+}
+
+async function installGitHubSkill(source, path, id, all) {
+  if (!source) { skillHubStatus('Enter a GitHub source first.', 'bad'); return; }
+  skillHubStatus(`Installing ${path || id || source}…`, 'busy');
+  const res = await api('/api/skills/install', { method: 'POST', body: JSON.stringify({ source, path, id, all: !!all }) });
+  if (res.needsSelection) {
+    $('skillResults').innerHTML = (res.skills || []).map((s) => skillItemHtml(s, source)).join('');
+    skillHubStatus(res.error || 'choose a skill', 'bad');
+    return;
+  }
+  if (!res.ok) { skillHubStatus(res.error || 'install failed', 'bad'); return; }
+  state.installedSkills = res.installed || [];
+  const names = (res.installed || []).map((s) => s.name || s.id).join(', ');
+  skillHubStatus(`✓ Installed ${names}`, 'ok');
+  $('skillSource').value = '';
+  if ($('installedSkillsList')) $('installedSkillsList').innerHTML = skillChips(res.skills || []);
+  if (path || id) {
+    // mark the row installed without re-fetching the whole repo
+    const row = Array.from(document.querySelectorAll('#skillResults [data-skill-action="install"]'))
+      .find((b) => b.dataset.path === path && b.dataset.id === id);
+    if (row) { row.outerHTML = '<span class="skill-installed">installed</span>'; }
+  }
+}
+
+async function uninstallGitHubSkill(id) {
+  if (!confirm(`Remove skill "${id}"?`)) return;
+  const res = await api('/api/skills/uninstall', { method: 'POST', body: JSON.stringify({ id }) });
+  if (!res.ok) { skillHubStatus(res.error || 'remove failed', 'bad'); return; }
+  state.installedSkills = res.installed || [];
+  skillHubStatus(`Removed ${id}`, 'ok');
+  if ($('installedSkillsList')) $('installedSkillsList').innerHTML = skillChips(res.skills || []);
+  document.querySelectorAll('#skillResults [data-skill-action="remove"]').forEach((b) => {
+    if (b.dataset.id === id) b.outerHTML = `<button class="btn small primary" type="button" data-skill-action="install" data-source="${escapeHtml($('skillSource').value.trim())}" data-id="${escapeHtml(id)}" data-path="">Install</button>`;
+  });
+}
+
+function wireSkillHub() {
+  const btn = $('skillSearch');
+  if (!btn) return;
+  btn.addEventListener('click', () => searchGitHubSkills().catch((e) => skillHubStatus(e.message, 'bad')));
+  $('skillQuery').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); searchGitHubSkills().catch((err) => skillHubStatus(err.message, 'bad')); }
+  });
+  $('skillInstall').addEventListener('click', () => {
+    const source = $('skillSource').value.trim();
+    const m = /^(.*?)(?:\s+path:(\S+))?$/.exec(source);
+    installGitHubSkill(source, m && m[2] ? m[2] : '', '', false).catch((e) => skillHubStatus(e.message, 'bad'));
+  });
+  $('skillSource').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); $('skillInstall').click(); }
+  });
+  $('skillResults').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-skill-action]');
+    if (!b) return;
+    const action = b.dataset.skillAction;
+    if (action === 'browse') browseSkillRepo(b.dataset.source).catch((err) => skillHubStatus(err.message, 'bad'));
+    else if (action === 'install') installGitHubSkill(b.dataset.source, b.dataset.path, b.dataset.id, false).catch((err) => skillHubStatus(err.message, 'bad'));
+    else if (action === 'install-all') installGitHubSkill(b.dataset.source, '', '', true).catch((err) => skillHubStatus(err.message, 'bad'));
+    else if (action === 'remove') uninstallGitHubSkill(b.dataset.id).catch((err) => skillHubStatus(err.message, 'bad'));
+  });
 }
 
 /* ---------- summaries + export ---------- */
@@ -1339,6 +1496,7 @@ async function init() {
   // Wire the mobile UI first so the hamburger / settings / editor controls work
   // instantly, even while config and models are still loading (or fail to load).
   wireMobileUi();
+  wireSkillHub();
 
   await loadConfig();
   showWorkDir();
@@ -1416,6 +1574,36 @@ async function init() {
   // YouTube credentials
   $('saveYtCreds').addEventListener('click', saveYtCreds);
   $('connectAgent').addEventListener('click', connectAgent);
+  $('saveIgCreds').addEventListener('click', async () => {
+    const clientId = $('igClientId').value.trim();
+    const clientSecret = $('igClientSecret').value.trim();
+    if (!clientId || !clientSecret) { $('igAuthStatus').textContent = 'both Client ID and Client Secret are required'; return; }
+    try {
+      state.config = await api('/api/instagram/credentials', { method: 'POST', body: JSON.stringify({ clientId, clientSecret }) });
+      $('igClientSecret').value = state.config.instagram ? state.config.instagram.clientSecretMasked : '';
+      $('igAuthStatus').textContent = '✓ keys saved';
+    } catch (e) { $('igAuthStatus').textContent = 'save failed: ' + e.message; }
+  });
+  $('saveFbCreds').addEventListener('click', async () => {
+    const clientId = $('fbClientId').value.trim();
+    const clientSecret = $('fbClientSecret').value.trim();
+    if (!clientId || !clientSecret) { $('fbAuthStatus').textContent = 'both Client ID and Client Secret are required'; return; }
+    try {
+      state.config = await api('/api/facebook/credentials', { method: 'POST', body: JSON.stringify({ clientId, clientSecret }) });
+      $('fbClientSecret').value = state.config.facebook ? state.config.facebook.clientSecretMasked : '';
+      $('fbAuthStatus').textContent = '✓ keys saved';
+    } catch (e) { $('fbAuthStatus').textContent = 'save failed: ' + e.message; }
+  });
+  $('saveGCreds').addEventListener('click', async () => {
+    const clientId = $('gClientId').value.trim();
+    const clientSecret = $('gClientSecret').value.trim();
+    if (!clientId || !clientSecret) { $('gAuthStatus').textContent = 'both Client ID and Client Secret are required'; return; }
+    try {
+      state.config = await api('/api/google/credentials', { method: 'POST', body: JSON.stringify({ clientId, clientSecret }) });
+      $('gClientSecret').value = state.config.google ? state.config.google.clientSecretMasked : '';
+      $('gAuthStatus').textContent = '✓ keys saved';
+    } catch (e) { $('gAuthStatus').textContent = 'save failed: ' + e.message; }
+  });
 
   // YouTube Studio panel
   $('openYtStudio').addEventListener('click', openYtStudio);
