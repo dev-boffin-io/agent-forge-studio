@@ -42,15 +42,15 @@ test('evaluate: last matching rule wins, default is ask', () => {
 
 test('decide: defaults < config < agent layering', () => {
   const base = { session: { grants: {} }, inherited: [] };
-  assert.equal(P.decide('edit', 'a.js', { ...base, agent: {}, config: {} }), 'allow'); // BASE_RULES
+  assert.equal(P.decide('edit', 'a.js', { ...base, agent: {}, config: {} }).decision, 'ask'); // no config = ask default
   const config = { permission: { bash: { '*': 'ask', 'ls *': 'allow' } } };
-  assert.equal(P.decide('bash', 'ls -la', { ...base, agent: {}, config }), 'allow');
-  assert.equal(P.decide('bash', 'rm -rf x', { ...base, agent: {}, config }), 'ask');
+  assert.equal(P.decide('bash', 'ls -la', { ...base, agent: {}, config }).decision, 'allow');
+  assert.equal(P.decide('bash', 'rm -rf x', { ...base, agent: {}, config }).decision, 'ask');
   // agent layer wins over config
   const agent = { permission: { bash: 'deny' } };
-  assert.equal(P.decide('bash', 'ls -la', { ...base, agent, config }), 'deny');
+  assert.equal(P.decide('bash', 'ls -la', { ...base, agent, config }).decision, 'deny');
   // config layer wins over defaults
-  assert.equal(P.decide('edit', 'a.js', { ...base, agent: {}, config: { permission: { edit: 'ask' } } }), 'ask');
+  assert.equal(P.decide('edit', 'a.js', { ...base, agent: {}, config: { permission: { edit: 'ask' } } }).decision, 'ask');
 });
 
 test('decide: session grants can allow an "ask" but never override a deny', () => {
@@ -58,10 +58,10 @@ test('decide: session grants can allow an "ask" but never override a deny', () =
     agent: {}, config: { permission: { bash: { '*': 'ask' } } },
     session: { grants: [{ permission: 'bash', pattern: 'git status *', action: 'allow' }] }, inherited: [],
   };
-  assert.equal(P.decide('bash', 'git status --short', askCtx), 'allow');
-  assert.equal(P.decide('bash', 'rm -rf x', askCtx), 'ask');
+  assert.equal(P.decide('bash', 'git status --short', askCtx).decision, 'allow');
+  assert.equal(P.decide('bash', 'rm -rf x', askCtx).decision, 'ask');
   const denyCtx = { ...askCtx, config: { permission: { bash: { '*': 'deny' } } } };
-  assert.equal(P.decide('bash', 'git status --short', denyCtx), 'deny');
+  assert.equal(P.decide('bash', 'git status --short', denyCtx).decision, 'deny');
 });
 
 test('normalizeGrants: legacy object form becomes an allow list', () => {
