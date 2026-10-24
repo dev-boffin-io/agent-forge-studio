@@ -49,11 +49,27 @@
       "rm *": "deny"
     },
     "publish": "ask",
-    "browser": "allow"
+    "browser_read": "allow",
+    "browser_write": "ask"
   },
   "instructions": [],
   "toolOutput": {},
   "youtube": {
+    "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
+    "clientSecret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
+    "redirectUri": ""
+  },
+  "instagram": {
+    "clientId": "YOUR_META_APP_ID",
+    "clientSecret": "YOUR_META_APP_SECRET",
+    "redirectUri": ""
+  },
+  "facebook": {
+    "clientId": "YOUR_META_APP_ID",
+    "clientSecret": "YOUR_META_APP_SECRET",
+    "redirectUri": ""
+  },
+  "google": {
     "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
     "clientSecret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
     "redirectUri": ""

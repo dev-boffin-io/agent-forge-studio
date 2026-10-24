@@ -12,6 +12,7 @@ const { exec } = require('node:child_process');
 
 const log = require('./lib/log');
 const cfgLib = require('./lib/config');
+const { ensureSecretDir } = require('./lib/secret-store');
 const sessions = require('./lib/sessions');
 const agentsLib = require('./lib/agents');
 const toolsLib = require('./lib/tools');
@@ -34,6 +35,11 @@ function json(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { location, 'cache-control': 'no-store' });
+  res.end();
 }
 
 function readBody(req) {
@@ -106,6 +112,8 @@ function publicConfig() {
       hasCredentials: ig.hasCredentials(c2),
       hasToken: !!ig.loadToken(),
       scopes: ig.SCOPES,
+      username: (ig.loadToken() && ig.loadToken().username) || null,
+      igUserId: (ig.loadToken() && ig.loadToken().igUserId) || null,
     };
   } catch (e) { /* ignore */ }
   try {
@@ -118,6 +126,8 @@ function publicConfig() {
       hasCredentials: fb.hasCredentials(c2),
       hasToken: !!fb.loadToken(),
       scopes: fb.SCOPES,
+      accountName: (() => { const t = fb.loadToken(); const ids = t && t.pages ? Object.keys(t.pages) : []; return (ids[0] && t.page_names && t.page_names[ids[0]]) || null; })(),
+      pages: (() => { const t = fb.loadToken(); return t && t.pages ? Object.keys(t.pages).map((id) => ({ id, name: (t.page_names && t.page_names[id]) || null })) : []; })(),
     };
   } catch (e) { /* ignore */ }
   try {
@@ -130,6 +140,7 @@ function publicConfig() {
       hasCredentials: g.hasCredentials(c2),
       hasToken: !!g.loadToken(),
       scopes: g.SCOPES,
+      email: (g.loadToken() && g.loadToken().email) || null,
     };
   } catch (e) { /* ignore */ }
   return out;
@@ -283,6 +294,183 @@ async function handleApi(req, res, url) {
       return done(400, e.message);
     }
   }
+  if (p === '/auth/instagram/connect' && method === 'GET') {
+    const ig = require('./lib/instagram');
+    try {
+      const state = ig.createState();
+      res.setHeader('set-cookie', `ig_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=600`);
+      const port = (server.address() && server.address().port) || PORT;
+      return redirect(res, ig.buildAuthUrl({ redirectUri: ig.redirectUri({ port }), state }));
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (p === '/api/instagram/connect' && method === 'POST') {
+    const ig = require('./lib/instagram');
+    const state = ig.createState();
+    res.setHeader('set-cookie', `ig_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=600`);
+    const port = (server.address() && server.address().port) || PORT;
+    const url = ig.buildAuthUrl({ redirectUri: ig.redirectUri({ port }), state });
+    return json(res, 200, { ok: true, url });
+  }
+  if (p === '/api/instagram/status' && method === 'GET') {
+    const ig = require('./lib/instagram');
+    try {
+      return json(res, 200, ig.status());
+    } catch (e) {
+      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
+    }
+  }
+  if (p === '/auth/instagram/callback' && method === 'GET') {
+    const ig = require('./lib/instagram');
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    const state = url.searchParams.get('state');
+    const cookieState = parseCookies(req).ig_oauth_state || '';
+    res.setHeader('set-cookie', 'ig_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=0');
+    const done = (status, msg) => {
+      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
+<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
+.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
+.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
+<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Instagram agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
+<p style="color:#aaa">${status === 200 ? 'Instagram Business/Creator connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
+    };
+    if (!state || !cookieState || state !== cookieState || !ig.verifyState(state)) {
+      log.warn('instagram', 'OAuth callback rejected: state missing or mismatched');
+      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
+    }
+    if (err) return done(400, err);
+    if (!code) return done(400, 'no authorization code in the callback');
+    try {
+      const port = (server.address() && server.address().port) || PORT;
+      await ig.completeAuthorization(code, { redirectUri: ig.redirectUri({ port }) });
+      return done(200);
+    } catch (e) {
+      log.error('instagram', 'OAuth callback failed', e);
+      return done(400, e.message);
+    }
+  }
+
+  if (p === '/auth/facebook/connect' && method === 'GET') {
+    const fb = require('./lib/facebook');
+    try {
+      const state = fb.createState();
+      res.setHeader('set-cookie', `fb_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=600`);
+      const port = (server.address() && server.address().port) || PORT;
+      return redirect(res, fb.buildAuthUrl({ redirectUri: fb.redirectUri({ port }), state }));
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (p === '/api/facebook/connect' && method === 'POST') {
+    const fb = require('./lib/facebook');
+    const state = fb.createState();
+    res.setHeader('set-cookie', `fb_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=600`);
+    const port = (server.address() && server.address().port) || PORT;
+    const urlFb = fb.buildAuthUrl({ redirectUri: fb.redirectUri({ port }), state });
+    return json(res, 200, { ok: true, url: urlFb });
+  }
+  if (p === '/api/facebook/status' && method === 'GET') {
+    const fb = require('./lib/facebook');
+    try {
+      return json(res, 200, fb.status());
+    } catch (e) {
+      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
+    }
+  }
+  if (p === '/auth/facebook/callback' && method === 'GET') {
+    const fb = require('./lib/facebook');
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    const state = url.searchParams.get('state');
+    const cookieState = parseCookies(req).fb_oauth_state || '';
+    res.setHeader('set-cookie', 'fb_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=0');
+    const done = (status, msg) => {
+      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
+<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
+.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
+.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
+<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Facebook agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
+<p style="color:#aaa">${status === 200 ? 'Pages connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
+    };
+    if (!state || !cookieState || state !== cookieState || !fb.verifyState(state)) {
+      log.warn('facebook', 'OAuth callback rejected: state missing or mismatched');
+      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
+    }
+    if (err) return done(400, err);
+    if (!code) return done(400, 'no authorization code in the callback');
+    try {
+      const port = (server.address() && server.address().port) || PORT;
+      await fb.completeAuthorization(code, { redirectUri: fb.redirectUri({ port }) });
+      return done(200);
+    } catch (e) {
+      log.error('facebook', 'OAuth callback failed', e);
+      return done(400, e.message);
+    }
+  }
+
+  if (p === '/auth/google/connect' && method === 'GET') {
+    const g = require('./lib/google');
+    try {
+      const state = g.createState();
+      res.setHeader('set-cookie', `g_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600`);
+      const port = (server.address() && server.address().port) || PORT;
+      return redirect(res, g.buildAuthUrl({ redirectUri: g.redirectUri({ port }), state }));
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (p === '/api/google/connect' && method === 'POST') {
+    const g = require('./lib/google');
+    const state = g.createState();
+    res.setHeader('set-cookie', `g_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600`);
+    const port = (server.address() && server.address().port) || PORT;
+    const urlG = g.buildAuthUrl({ redirectUri: g.redirectUri({ port }), state });
+    return json(res, 200, { ok: true, url: urlG });
+  }
+  if (p === '/api/google/status' && method === 'GET') {
+    const g = require('./lib/google');
+    try {
+      return json(res, 200, g.status());
+    } catch (e) {
+      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
+    }
+  }
+  if (p === '/auth/google/callback' && method === 'GET') {
+    const g = require('./lib/google');
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    const state = url.searchParams.get('state');
+    const cookieState = parseCookies(req).g_oauth_state || '';
+    res.setHeader('set-cookie', 'g_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=0');
+    const done = (status, msg) => {
+      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
+<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
+.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
+.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
+<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Google agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
+<p style="color:#aaa">${status === 200 ? 'Google account connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
+    };
+    if (!state || !cookieState || state !== cookieState || !g.verifyState(state)) {
+      log.warn('google', 'OAuth callback rejected: state missing or mismatched');
+      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
+    }
+    if (err) return done(400, err);
+    if (!code) return done(400, 'no authorization code in the callback');
+    try {
+      const port = (server.address() && server.address().port) || PORT;
+      await g.completeAuthorization(code, { redirectUri: g.redirectUri({ port }) });
+      return done(200);
+    } catch (e) {
+      log.error('google', 'OAuth callback failed', e);
+      return done(400, e.message);
+    }
+  }
+
 
   // ---- models ----
   if (p === '/api/models' && method === 'GET') {
@@ -453,17 +641,52 @@ async function handleApi(req, res, url) {
       return json(res, 200, { ok: false, error: e.message, skills: [] });
     }
   }
+  if (p === '/api/skills/install/preview' && method === 'POST') {
+    const body = await readBody(req);
+    const hub = require('./lib/skillhub');
+    try {
+      const out = await hub.previewInstall(String(body.source || ''), {
+        id: body.id ? String(body.id) : undefined,
+        path: body.path ? String(body.path) : undefined,
+        all: !!body.all,
+      });
+      return json(res, 200, out);
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message });
+    }
+  }
+  if (p === '/api/skills/install/confirm' && method === 'POST') {
+    const body = await readBody(req);
+    const hub = require('./lib/skillhub');
+    try {
+      const out = await hub.confirmInstall(String(body.source || ''), {
+        sha: String(body.sha || body.commit || ''),
+        previewToken: String(body.previewToken || body.token || ''),
+        force: !!body.force,
+      });
+      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message, skills: skillsLib.listSkills() });
+    }
+  }
   if (p === '/api/skills/install' && method === 'POST') {
     const body = await readBody(req);
     const hub = require('./lib/skillhub');
     try {
-      const out = await hub.installSkill(String(body.source || ''), {
+      if (body.sha || body.commit || body.previewToken) {
+        const out = await hub.confirmInstall(String(body.source || ''), {
+          sha: String(body.sha || body.commit || ''),
+          previewToken: String(body.previewToken || body.token || ''),
+          force: !!body.force,
+        });
+        return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
+      }
+      const out = await hub.previewInstall(String(body.source || ''), {
         id: body.id ? String(body.id) : undefined,
         path: body.path ? String(body.path) : undefined,
         all: !!body.all,
-        force: !!body.force,
       });
-      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
+      return json(res, 200, out);
     } catch (e) {
       return json(res, 200, { ok: false, error: e.message, skills: skillsLib.listSkills() });
     }
@@ -705,6 +928,7 @@ async function main() {
   }
   if (args.dir) cfgLib.setWorkDir(args.dir);
   else cfgLib.setWorkDir(process.cwd());
+  tightenSecrets();
 
   await new Promise((resolve, reject) => {
     server.once('error', (e) => { log.error('server', 'listen failed', e); reject(e); });
@@ -722,6 +946,52 @@ async function main() {
 
 if (require.main === module) {
   main().catch((e) => { console.error(e.message); process.exit(1); });
+}
+
+
+function tightenSecrets() {
+  try {
+    const root = cfgLib.studioDir ? cfgLib.studioDir() : null;
+    if (!root) return;
+    ensureSecretDir(root);
+    const tightenTree = (dir) => {
+      ensureSecretDir(dir);
+      const stack = [dir];
+      while (stack.length) {
+        const cur = stack.pop();
+        let ents = [];
+        try { ents = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+        for (const ent of ents) {
+          const full = path.join(cur, ent.name);
+          if (ent.isDirectory()) { ensureSecretDir(full); stack.push(full); continue; }
+          if (!ent.isFile()) continue;
+          let st;
+          try { st = fs.statSync(full); } catch { continue; }
+          if (!((st.mode & 0o777) & 0o077)) continue;
+          try {
+            fs.chmodSync(full, 0o600);
+            log.warn('server', `tightened permissions on ${full} to 0600`);
+          } catch (e) {
+            if (process.platform !== 'win32') log.warn('server', `failed to tighten permissions on ${full}`, e);
+          }
+        }
+      }
+    };
+    const projectJson = path.join(root, 'project.json');
+    try {
+      const st = fs.statSync(projectJson);
+      if ((st.mode & 0o777) & 0o077) {
+        fs.chmodSync(projectJson, 0o600);
+        log.warn('server', `tightened permissions on ${projectJson} to 0600`);
+      }
+    } catch { /* not present */ }
+    for (const name of ['config', 'browser']) {
+      const dir = path.join(root, name);
+      if (fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) tightenTree(dir);
+    }
+  } catch (e) {
+    if (process.platform !== 'win32') log.debug('server', 'secret tightening failed', e);
+  }
 }
 
 module.exports = { server, handleApi, requestAllowed, parseCookies, hostAllowed, originAllowed };

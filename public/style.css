@@ -1032,3 +1032,12 @@ body.busy-models #endpoint { opacity: .75; }
   .autoforge { margin: 8px 8px 0; }
   .af-step { grid-template-columns: 12px auto 1fr; font-size: 12px; }
 }
+.skill-preview { margin-top: 8px; }
+.skill-review { border: 1px solid var(--line); background: var(--bg3); border-radius: 8px; padding: 10px; }
+.skill-review-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.skill-prev-file { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; padding: 2px 0; }
+.skill-prev-file code { color: var(--text); overflow-wrap: anywhere; }
+.skill-prev-file span { color: var(--dim); white-space: nowrap; }
+.skill-flag { border-left: 2px solid var(--warn); padding: 4px 8px; margin: 4px 0; font-size: 11.5px; }
+.skill-flag-excerpt { color: var(--dim); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.skill-md { max-height: 34vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 11px; margin: 0; }
