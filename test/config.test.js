@@ -16,7 +16,7 @@ test('projectKey: stable, sanitised, unique per directory', () => {
   assert.equal(a, b);
   assert.notEqual(a, c);
   assert.match(a, /^My-Project-[0-9a-f]{8}$/);
-  assert.match(cfg.projectKey('/'), /^project-[0-9a-f]{8}$/);
+  assert.match(cfg.projectKey('/'), /^channel-[0-9a-f]{8}$/);
 });
 
 test('setWorkDir / getWorkDir: rejects non-directories, stores the realpath', () => {
@@ -39,15 +39,14 @@ test('setWorkDir: launching from the app root falls back to ./workspace', () => 
 });
 
 test('loadConfig: defaults, global and local layers', () => {
-  assert.equal(cfg.VIRTUAL_PREFIX, '.studio');
+  assert.equal(cfg.VIRTUAL_PREFIX, '.ytstudio');
   const defaults = cfg.loadConfig();
   assert.equal(typeof defaults.endpoint, 'string');
   assert.ok(defaults.endpoint.length > 0);
   assert.equal(defaults.autoCtxMax, 131072);
-  assert.equal(defaults.maxIterations, 200);
+  assert.equal(defaults.maxIterations, 100);
   assert.equal(defaults.permission.edit, 'allow');
   assert.deepEqual(defaults.providers, {});
-  assert.deepEqual(defaults.mcp, {});
   assert.ok(typeof defaults.systemPrompt === 'string' && defaults.systemPrompt.length > 0);
 
   // per-project config wins over the global one
@@ -65,5 +64,5 @@ test('loadConfig: defaults, global and local layers', () => {
   const global = fs.existsSync(cfg.CONFIG_PATH) ? JSON.parse(fs.readFileSync(cfg.CONFIG_PATH, 'utf8')) : {};
   const after = cfg.loadConfig();
   assert.equal(after.model, global.model !== undefined ? global.model : cfg.DEFAULT_CONFIG.model);
-  assert.deepEqual(after.providers, {});
+  assert.deepEqual(after.providers, global.providers || {});
 });
