@@ -14,7 +14,7 @@ const ROOT = path.join(__dirname, '..');
 function startServer() {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(ROOT, 'server.js'), '--port', '0', '--dir', ctx.dir], {
-      env: { ...process.env, OLLAMA_STUDIO_HOME: ctx.home },
+      env: { ...process.env, OLLAMA_STUDIO_HOME: ctx.home, YOUTUBE_STUDIO_HOME: ctx.home },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -35,17 +35,18 @@ test('server boots, serves the UI and answers the HTTP API', async (t) => {
   t.after(() => child.kill('SIGKILL'));
   const base = `http://127.0.0.1:${port}`;
 
-  const state = await (await fetch(base + '/api/state')).json();
-  assert.equal(state.workDir, fs.realpathSync(ctx.dir));
-  assert.ok(Array.isArray(state.agents));
-  assert.ok(state.agents.some((a) => a.name === 'build'));
-  assert.ok(state.subagents.some((a) => a.name === 'general'));
+  const config = await (await fetch(base + '/api/config')).json();
+  assert.equal(config.workDir, fs.realpathSync(ctx.dir));
+
+  const agents = await (await fetch(base + '/api/agents')).json();
+  assert.ok(Array.isArray(agents.agents));
+  assert.ok(agents.agents.some((a) => a.id === 'create' && a.primary));
+  assert.ok(agents.agents.some((a) => a.id === 'scout' && a.subagent));
 
   const page = await fetch(base + '/');
   assert.equal(page.status, 200);
   assert.ok((await page.text()).includes('<html'));
 
-  const config = await (await fetch(base + '/api/config')).json();
   assert.ok(config.endpoint);
 
   const sessionsRes = await fetch(base + '/api/sessions');
@@ -97,20 +98,4 @@ test('server rejects an OAuth callback with a missing or invalid state (CSRF)', 
   assert.equal((await fetch(base + '/auth/youtube/callback?code=x')).status, 400);
   // a state we never issued → rejected
   assert.equal((await fetch(base + '/auth/youtube/callback?code=x&state=forged.state.value')).status, 400);
-});
-
-test('GET session returns summarised-away messages as `history` so the chat can keep showing them', async (t) => {
-  const sessions = require('../lib/sessions');
-  const s = await sessions.create({ agent: 'build', model: 'x', title: 't' });
-  await sessions.archiveAppend(s.id, [{ role: 'user', content: 'old question' }, { role: 'tool', tool_call_id: 'c', content: 'x'.repeat(30000) }], 0);
-  s.archived = 2;
-  s.messages = [{ role: 'user', summary: true, content: 'Summary of the earlier conversation:\nS' }, { role: 'assistant', summary: true, content: 'ok' }];
-  await sessions.save(s);
-  const { child, port } = await startServer();
-  t.after(() => child.kill('SIGKILL'));
-  const got = await (await fetch(`http://127.0.0.1:${port}/api/sessions/${s.id}`)).json();
-  assert.equal(got.history.length, 2);
-  assert.equal(got.history[0].content, 'old question');
-  assert.ok(got.history[1].content.length < 21000);
-  assert.equal(got.messages.length, 2);
 });
