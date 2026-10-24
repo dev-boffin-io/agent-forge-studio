@@ -11,8 +11,8 @@ const commands = require('../lib/commands');
 test('built-in commands are always available', () => {
   const all = commands.loadCommands();
   assert.ok(all.init && all.init.builtin);
-  assert.ok(all.review && all.review.builtin);
-  assert.equal(all.init.description, 'create/update AGENTS.md for this directory');
+  assert.ok(all.script && all.script.builtin);
+  assert.ok(all.init.description.includes('CHANNEL.md'));
 });
 
 test('expand: /init substitutes $ARGUMENTS', async () => {
@@ -20,7 +20,7 @@ test('expand: /init substitutes $ARGUMENTS', async () => {
   assert.equal(r.command.name, 'init');
   assert.ok(r.text.includes('focus on the test suite'));
   assert.ok(!r.text.includes('$ARGUMENTS'));
-  assert.ok(r.text.includes('AGENTS.md'));
+  assert.ok(r.text.includes('CHANNEL.md'));
 });
 
 test('expand: unknown or non-command input returns null', async () => {

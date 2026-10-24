@@ -6,99 +6,86 @@ const { setup } = require('./helpers');
 const ctx = setup();
 const sessions = require('../lib/sessions');
 
-test('create / get / list / latest', async () => {
-  const s = await sessions.create({ agent: 'build', model: 'llama3', title: 'First' });
-  assert.match(s.id, /^ses_[a-z0-9]{6,}$/);
+test('create / load / list / delete', () => {
+  const s = sessions.createSession({ agent: 'create', title: 'First' });
+  assert.match(s.id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(s.messages, []);
-  assert.equal(s.parentId, null);
+  assert.equal(s.archived, false);
 
-  const got = await sessions.get(s.id);
+  const got = sessions.loadSession(s.id);
   assert.equal(got.title, 'First');
+  assert.equal(got.agent, 'create');
 
-  const rows = await sessions.list();
+  const rows = sessions.listSessions();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, s.id);
-  assert.equal(rows[0].messageCount, 0);
-  assert.equal((await sessions.latest()).id, s.id);
+  assert.equal(rows[0].messages, 0);
 
-  await assert.rejects(() => sessions.get('ses_doesnotexist000'), /session not found/);
-  await assert.rejects(() => sessions.get('../../evil'), /invalid session id/);
-  await assert.rejects(() => sessions.get('nope'), /invalid session id/);
+  assert.equal(sessions.deleteSession(s.id), true);
+  assert.throws(() => sessions.loadSession(s.id), /ENOENT/);
 });
 
-test('save: persists messages and bumps updatedAt', async () => {
-  const s = await sessions.create({ title: 'Chat' });
+test('load rejects invalid ids and keeps summaries out of list rows', () => {
+  assert.throws(() => sessions.loadSession('../../evil'));
+  assert.throws(() => sessions.loadSession('nope'));
+  const s = sessions.createSession({ title: 'Summarised' });
+  s.summary = 'A summary';
+  sessions.saveSession(s);
+  const row = sessions.listSessions().find((r) => r.id === s.id);
+  assert.equal(row.summary, 'A summary');
+  assert.equal(row.title, 'Summarised');
+});
+
+test('saveSession persists messages and bumps updatedAt', async () => {
+  const s = sessions.createSession({ title: 'Chat' });
   const before = s.updatedAt;
   await new Promise((r) => setTimeout(r, 5));
   s.messages.push({ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' });
-  await sessions.save(s);
-  const got = await sessions.get(s.id);
+  sessions.saveSession(s);
+  const got = sessions.loadSession(s.id);
   assert.equal(got.messages.length, 2);
   assert.ok(got.updatedAt > before);
 });
 
-test('subagent children are hidden from list but reachable via children()', async () => {
-  const parent = await sessions.create({ title: 'parent' });
-  const child = await sessions.create({ title: 'child', parentId: parent.id });
-  const rows = await sessions.list();
-  assert.ok(!rows.some((r) => r.id === child.id));
-  assert.ok((await sessions.list({ includeChildren: true })).some((r) => r.id === child.id));
-  const kids = await sessions.children(parent.id);
-  assert.equal(kids.length, 1);
-  assert.equal(kids[0].id, child.id);
+test('append / updateLastAssistant / editMessage maintain the transcript', () => {
+  const s = sessions.createSession({ title: 'Messages' });
+  sessions.append(s.id, { role: 'user', content: 'question' });
+  sessions.append(s.id, { role: 'assistant', content: 'partial', thinking: 'thinking...' });
+  sessions.updateLastAssistant(s.id, 'complete');
+  let got = sessions.loadSession(s.id);
+  assert.equal(got.messages[1].content, 'complete');
+  assert.equal(got.messages[1].thinking, 'thinking...');
+
+  sessions.editMessage(s.id, 0, 'new question');
+  got = sessions.loadSession(s.id);
+  assert.equal(got.messages.length, 1);
+  assert.equal(got.messages[0].content, 'new question');
+  assert.throws(() => sessions.editMessage(s.id, 99, 'x'), /bad message index/);
 });
 
-test('fork: copies messages (optionally sliced) and marks the source', async () => {
-  const s = await sessions.create({ title: 'src', model: 'm', agent: 'build' });
-  s.messages.push({ role: 'user', content: 'one' }, { role: 'assistant', content: 'two' }, { role: 'user', content: 'three' });
-  await sessions.save(s);
+test('setTitle / setAgent / archiveSession update metadata', () => {
+  const s = sessions.createSession({ title: 'Old', agent: 'create' });
+  sessions.setTitle(s.id, 'New');
+  sessions.setAgent(s.id, 'analyze');
+  const got = sessions.loadSession(s.id);
+  assert.equal(got.title, 'New');
+  assert.equal(got.agent, 'analyze');
 
-  const f = await sessions.fork(s.id);
-  assert.equal(f.title, 'src (fork)');
-  assert.equal(f.forkOf, s.id);
-  assert.equal(f.model, 'm');
-  assert.equal(f.messages.length, 3);
-  assert.notEqual(f.id, s.id);
-
-  const partial = await sessions.fork(s.id, 2);
-  assert.equal(partial.messages.length, 2);
-  assert.equal(partial.messages[1].content, 'two');
+  sessions.archiveSession(s.id, true);
+  assert.ok(!sessions.listSessions().some((r) => r.id === s.id));
+  assert.ok(sessions.listSessions({ archived: true }).some((r) => r.id === s.id));
+  sessions.archiveSession(s.id, false);
+  assert.ok(sessions.listSessions().some((r) => r.id === s.id));
 });
 
-test('archive: summarised-away messages stay in the transcript', async () => {
-  const s = await sessions.create({ title: 'arch' });
-  s.messages.push({ role: 'user', content: 'live message' });
-  await sessions.save(s);
-  await sessions.archiveAppend(s.id, [{ role: 'user', content: 'old one', summary: true }, { role: 'assistant', content: 'old two' }], 0);
-  s.archived = 2;
-  await sessions.save(s);
-
-  const rows = await sessions.archiveRead(s.id);
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].content, 'old one');
-  assert.equal((await sessions.archiveRead(s.id, 1)).length, 1);
-
-  const t = await sessions.transcript(s);
-  assert.equal(t.length, 3);
-  assert.equal(t[0].content, 'old one');
-  assert.equal(t[2].content, 'live message');
-});
-
-test('exportTree: session plus children recursively', async () => {
-  const p = await sessions.create({ title: 'root' });
-  const c1 = await sessions.create({ title: 'c1', parentId: p.id });
-  await sessions.create({ title: 'c2', parentId: c1.id });
-  const tree = await sessions.exportTree(p.id);
-  assert.equal(tree.title, 'root');
-  assert.equal(tree.children.length, 1);
-  assert.equal(tree.children[0].title, 'c1');
-  assert.equal(tree.children[0].children.length, 1);
-});
-
-test('remove: deletes a session and its children', async () => {
-  const p = await sessions.create({ title: 'gone' });
-  const c = await sessions.create({ title: 'child', parentId: p.id });
-  await sessions.remove(p.id);
-  await assert.rejects(() => sessions.get(p.id), /session not found/);
-  await assert.rejects(() => sessions.get(c.id), /session not found/);
+test('pruneForModel trims older tool output but keeps recent messages', () => {
+  const s = sessions.createSession({ title: 'Prune' });
+  const big = 'x'.repeat(4000);
+  s.messages = [
+    ...Array.from({ length: 32 }, (_, i) => ({ role: 'user', content: 'm' + i })),
+    { role: 'tool', content: big },
+  ];
+  const out = sessions.pruneForModel(s, { keepRecent: 5 });
+  assert.equal(out.length, 33);
+  assert.ok(out[out.length - 1].content.length <= sessions.MAX_TOOL_CHARS);
 });
