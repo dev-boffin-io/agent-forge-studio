@@ -8,7 +8,8 @@ const path = require('node:path');
 
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-home-'));
-  process.env.OLLAMA_STUDIO_HOME = home;
+  process.env.OLLAMA_STUDIO_HOME = home;   // legacy name used by some tests
+  process.env.YOUTUBE_STUDIO_HOME = home;  // real config override
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-proj-'));
   const cfg = require('../lib/config');
   cfg.setWorkDir(dir);
