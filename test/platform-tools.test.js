@@ -8,7 +8,7 @@ setup();
 const tools = require('../lib/tools');
 const P = require('../lib/permission');
 
-function tool(name) { return tools.TOOLS.find((t) => t.name === name); }
+function tool(name) { return tools.PLATFORM_TOOLS[name]; }
 
 test('platform tools are registered with the expected categories', () => {
   const expected = {

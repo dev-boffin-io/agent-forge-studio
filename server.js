@@ -1,66 +1,96 @@
 #!/usr/bin/env node
 'use strict';
 
-// agent-forge-studio server — zero-dependency HTTP + SSE around the agent loop.
-// Serves the browser UI, the session/file/agent APIs, and streams agent runs as SSE events.
-
 const http = require('node:http');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { exec } = require('node:child_process');
+const { URL } = require('node:url');
+const { spawn } = require('node:child_process');
 
-const log = require('./lib/log');
-const cfgLib = require('./lib/config');
-const { ensureSecretDir } = require('./lib/secret-store');
-const sessions = require('./lib/sessions');
-const agentsLib = require('./lib/agents');
-const toolsLib = require('./lib/tools');
-const skillsLib = require('./lib/skills');
-const commandsLib = require('./lib/commands');
-const agentLib = require('./lib/agent');
+const cfg = require('./lib/config');
 const llm = require('./lib/llm');
+const mcp = require('./lib/mcp');
+const lsp = require('./lib/lsp');
+const snapshot = require('./lib/snapshot');
+const skills = require('./lib/skills');
+const procs = require('./lib/procs');
 const ws = require('./lib/workspace');
+const sessions = require('./lib/sessions');
+const agents = require('./lib/agents');
+const { runAgent, compactSession, generateTitle, resolveConfig, contextSize } = require('./lib/agent');
+const journal = require('./lib/journal');
+const commands = require('./lib/commands');
+const attach = require('./lib/attach');
+const runtime = require('./lib/runtime');
+const log = require('./lib/log');
 const { statusFor, explain } = require('./lib/errors');
-const { isSea, getAsset } = require('./lib/runtime');
-const browser = require('./lib/browser');
+const { serveFile, downloadBlockedReason } = require('./lib/serve-file');
+const { createWaker } = require('./lib/wake');
 
-const PORT = Number(process.env.PORT) || 4312;
-const HOST = process.env.HOST || '127.0.0.1';
+// A bug in one request/tool must never take the whole studio (and a running agent) down: log it and keep serving.
+let crashCount = 0;
+process.on('uncaughtException', (err) => { crashCount++; log.error('process', 'uncaught exception', err); if (crashCount > 50) process.exit(1); });
+process.on('unhandledRejection', (err) => { log.error('process', 'unhandled promise rejection', err instanceof Error ? err : new Error(String(err))); });
 
-// pending interactive answers (permission/question) keyed by id
-const pending = new Map();
+/* ---------- CLI:  ollama-forge-studio [dir] [--port N] [--host H] [-c | --continue] [-s ID] [--agent NAME] ---------- */
 
-function json(res, status, data) {
-  const body = JSON.stringify(data);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
-  res.end(body);
+function parseArgs(argv) {
+  const o = { dir: null, port: Number(process.env.PORT || 4312), host: process.env.HOST || '127.0.0.1', cont: false, session: null, agent: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--port' || a === '-p') o.port = Number(argv[++i]);
+    else if (a === '--host') o.host = argv[++i];
+    else if (a === '--dir' || a === '-d') o.dir = argv[++i];
+    else if (a === '--continue' || a === '-c') o.cont = true;
+    else if (a === '--session' || a === '-s') o.session = argv[++i];
+    else if (a === '--agent') o.agent = argv[++i];
+    else if (a === '-h' || a === '--help') {
+      console.log('usage: ollama-forge-studio [dir] [--port N] [--host H] [-c|--continue] [-s <session-id>] [--agent <name>]');
+      process.exit(0);
+    } else if (!a.startsWith('-') && !o.dir) o.dir = a;
+  }
+  return o;
 }
 
-function redirect(res, location) {
-  res.writeHead(302, { location, 'cache-control': 'no-store' });
-  res.end();
+const args = parseArgs(process.argv.slice(2));
+
+/* ---------- localhost API hardening ---------- */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function extraAllowedHosts() {
+  const set = new Set();
+  const h = String(args.host || '').trim().toLowerCase();
+  if (h && h !== '0.0.0.0' && h !== '::' && h !== '::0') set.add(h);
+  return set;
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > 50 * 1024 * 1024) { reject(new Error('body too large')); req.destroy(); return; }
-      chunks.push(c);
-    });
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
-      if (!raw) return resolve({});
-      try { resolve(JSON.parse(raw)); } catch (e) { reject(new Error('invalid JSON body')); }
-    });
-    req.on('error', reject);
-  });
+function hostAllowed(hostHeader, extra = extraAllowedHosts()) {
+  if (!hostHeader) return false;
+  let hostname = String(hostHeader).trim().toLowerCase();
+  if (hostname.startsWith('[')) {
+    const end = hostname.indexOf(']');
+    if (end >= 0) hostname = hostname.slice(0, end + 1);
+  } else {
+    const colon = hostname.lastIndexOf(':');
+    if (colon >= 0 && hostname.indexOf(':') === colon) hostname = hostname.slice(0, colon);
+  }
+  return LOOPBACK_HOSTS.has(hostname) || extra.has(hostname);
 }
 
-/** Parse the Cookie header into a plain object (values are not decoded beyond URI decoding). */
+function originAllowed(origin, extra = extraAllowedHosts()) {
+  if (!origin) return true;
+  let u;
+  try { u = new URL(origin); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  return hostAllowed(u.host, extra);
+}
+
+function requestAllowed(headers = {}) {
+  return hostAllowed(headers.host) && originAllowed(headers.origin);
+}
+
 function parseCookies(req) {
   const out = {};
   const header = (req.headers && req.headers.cookie) || '';
@@ -74,924 +104,695 @@ function parseCookies(req) {
   return out;
 }
 
-function maskKey(k) {
-  if (!k) return '';
-  const s = String(k);
-  return s.length <= 4 ? '••••' : '••••' + s.slice(-4);
-}
 
-function escapeHtmlHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function publicConfig() {
-  const c = cfgLib.loadConfig();
-  const out = { ...c, apiKey: maskKey(c.apiKey), providers: {}, workDir: cfgLib.getWorkDir() };
-  for (const [id, p] of Object.entries(c.providers || {})) {
-    out.providers[id] = { ...p, apiKey: maskKey(p.apiKey) };
-  }
-  try {
-    const yt = require('./lib/youtube/oauth');
-    const c2 = cfgLib.loadConfig();
-    out.youtube = {
-      clientId: (c2.youtube && c2.youtube.clientId) || '',
-      clientSecretMasked: maskKey(c2.youtube && c2.youtube.clientSecret),
-      redirectUri: (c2.youtube && c2.youtube.redirectUri) || '',
-      hasCredentials: yt.hasCredentials(c2),
-      hasToken: !!yt.loadToken(),
-      scopes: yt.SCOPES,
-    };
-  } catch (e) { /* ignore */ }
-  try {
-    const ig = require('./lib/instagram');
-    const c2 = cfgLib.loadConfig();
-    out.instagram = {
-      clientId: (c2.instagram && c2.instagram.clientId) || '',
-      clientSecretMasked: maskKey(c2.instagram && c2.instagram.clientSecret),
-      redirectUri: (c2.instagram && c2.instagram.redirectUri) || '',
-      hasCredentials: ig.hasCredentials(c2),
-      hasToken: !!ig.loadToken(),
-      scopes: ig.SCOPES,
-      username: (ig.loadToken() && ig.loadToken().username) || null,
-      igUserId: (ig.loadToken() && ig.loadToken().igUserId) || null,
-    };
-  } catch (e) { /* ignore */ }
-  try {
-    const fb = require('./lib/facebook');
-    const c2 = cfgLib.loadConfig();
-    out.facebook = {
-      clientId: (c2.facebook && c2.facebook.clientId) || '',
-      clientSecretMasked: maskKey(c2.facebook && c2.facebook.clientSecret),
-      redirectUri: (c2.facebook && c2.facebook.redirectUri) || '',
-      hasCredentials: fb.hasCredentials(c2),
-      hasToken: !!fb.loadToken(),
-      scopes: fb.SCOPES,
-      accountName: (() => { const t = fb.loadToken(); const ids = t && t.pages ? Object.keys(t.pages) : []; return (ids[0] && t.page_names && t.page_names[ids[0]]) || null; })(),
-      pages: (() => { const t = fb.loadToken(); return t && t.pages ? Object.keys(t.pages).map((id) => ({ id, name: (t.page_names && t.page_names[id]) || null })) : []; })(),
-    };
-  } catch (e) { /* ignore */ }
-  try {
-    const g = require('./lib/google');
-    const c2 = cfgLib.loadConfig();
-    out.google = {
-      clientId: (c2.google && c2.google.clientId) || '',
-      clientSecretMasked: maskKey(c2.google && c2.google.clientSecret),
-      redirectUri: (c2.google && c2.google.redirectUri) || '',
-      hasCredentials: g.hasCredentials(c2),
-      hasToken: !!g.loadToken(),
-      scopes: g.SCOPES,
-      email: (g.loadToken() && g.loadToken().email) || null,
-    };
-  } catch (e) { /* ignore */ }
-  return out;
-}
+const PUBLIC_DIR = cfg.APP_ROOT ? path.join(cfg.APP_ROOT, 'public') : null; // null in the single-executable build (assets are embedded)
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json',
+  '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.png': 'image/png',
 };
 
-function serveAsset(res, key, mime) {
-  const embedded = getAsset(key);
-  if (embedded) {
-    res.writeHead(200, { 'content-type': mime, 'content-length': embedded.length });
-    res.end(embedded);
-    return true;
-  }
-  const file = path.join(cfgLib.APP_ROOT || '', 'public', key);
-  try {
-    const data = fs.readFileSync(file);
-    res.writeHead(200, { 'content-type': mime, 'content-length': data.length });
-    res.end(data);
-    return true;
-  } catch { return false; }
-}
-
-function sseStart(res) {
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
+function sendJson(res, status, body, extraHeaders = {}) {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(data),
+    'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
-  res.write(':ok\n\n');
+  res.end(data);
 }
 
-function sseSend(res, event, data) {
-  try {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  } catch { /* client gone */ }
+function readBody(req, limit = 100 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(Object.assign(new Error('request body too large'), { status: 413 })); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); } catch { reject(Object.assign(new Error('invalid JSON body'), { status: 400 })); }
+    });
+    req.on('error', reject);
+  });
 }
+
+function serveStatic(req, res, pathname) {
+  const rel = pathname === '/' ? '/index.html' : pathname;
+  const send = (ext, data) => { res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' }); res.end(data); };
+  const notFound = () => { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); };
+
+  if (runtime.isSea()) {                       // single executable: files are embedded in the binary
+    const key = path.posix.normalize(rel).replace(/^\/+/, '');
+    if (key.startsWith('..')) { res.writeHead(403); return res.end('Forbidden'); }
+    const data = runtime.getAsset(key);
+    return data ? send(path.extname(key), data) : notFound();
+  }
+
+  const filePath = path.join(PUBLIC_DIR, path.normalize(rel));
+  if (!filePath.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
+  fs.readFile(filePath, (err, data) => (err ? notFound() : send(path.extname(filePath), data)));
+}
+
+/* ---------- run/permission bookkeeping ---------- */
+
+const running = new Map();            // sessionId -> run { ac, events, subs, base }
+const pendingPermissions = new Map(); // permissionId -> { resolve, reject, sessionId }
+const pendingQuestions = new Map();   // questionId -> { resolve, sessionId }
+
+/** Drop saved tool output older than 7 days. */
+function pruneToolOutput() {
+  const dir = path.join(cfg.studioDir(), 'tool-output');
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      const f = path.join(dir, n);
+      if (Date.now() - fs.statSync(f).mtimeMs > 7 * 86400000) fs.rmSync(f, { force: true });
+    }
+  } catch (e) { if (e.code !== 'ENOENT') log.debug('server', 'tool-output cleanup failed', e); }
+}
+
+/** { ctx, used, tps } for a session (or a blank one when `session` is null) on `modelRef` (falls back to the configured model). */
+async function contextInfo(modelRef, session) {
+  const c = cfg.loadConfig();
+  const ref = modelRef || (session && session.model) || c.model;
+  let ctx = 0;
+  try { ctx = (await resolveConfig(c, ref)).numCtx || 0; } catch (e) { log.debug('server', 'context window unknown (provider unreachable?)', e); }
+  return { ctx, used: session ? contextSize(session) : 0, tps: (session && session.lastTps) || 0 };
+}
+
+const isTitled = () => false;
+const agentInfo = (a) => ({ name: a.name, description: a.description || '', mode: a.mode, builtin: !!a.builtin, source: a.source || 'builtin' });
+
+/* ---------- API ---------- */
 
 async function handleApi(req, res, url) {
-  const p = url.pathname;
+  const { pathname } = url;
   const method = req.method;
+  const seg = pathname.split('/').filter(Boolean); // ['api', ...]
 
-  // ---- config ----
-  if (p === '/api/config' && method === 'GET') return json(res, 200, publicConfig());
-  if (p === '/api/config' && method === 'POST') {
-    const body = await readBody(req);
-    const saved = cfgLib.saveConfig(body);
-    return json(res, 200, publicConfig());
-  }
-  if (p === '/api/youtube/credentials' && method === 'POST') {
-    const body = await readBody(req);
-    const patch = {
-      youtube: {
-        clientId: String(body.clientId || '').trim(),
-        clientSecret: String(body.clientSecret || '').trim(),
-        redirectUri: String(body.redirectUri || '').trim(),
-      }
-    };
-    cfgLib.saveConfig(patch);
-    return json(res, 200, publicConfig());
-  }
-  if (p === '/api/instagram/credentials' && method === 'POST') {
-    const body = await readBody(req);
-    const patch = {
-      instagram: {
-        clientId: String(body.clientId || '').trim(),
-        clientSecret: String(body.clientSecret || '').trim(),
-        redirectUri: String(body.redirectUri || '').trim(),
-      }
-    };
-    cfgLib.saveConfig(patch);
-    return json(res, 200, publicConfig());
-  }
-  if (p === '/api/facebook/credentials' && method === 'POST') {
-    const body = await readBody(req);
-    const patch = {
-      facebook: {
-        clientId: String(body.clientId || '').trim(),
-        clientSecret: String(body.clientSecret || '').trim(),
-        redirectUri: String(body.redirectUri || '').trim(),
-      }
-    };
-    cfgLib.saveConfig(patch);
-    return json(res, 200, publicConfig());
-  }
-  if (p === '/api/google/credentials' && method === 'POST') {
-    const body = await readBody(req);
-    const patch = {
-      google: {
-        clientId: String(body.clientId || '').trim(),
-        clientSecret: String(body.clientSecret || '').trim(),
-        redirectUri: String(body.redirectUri || '').trim(),
-      }
-    };
-    cfgLib.saveConfig(patch);
-    return json(res, 200, publicConfig());
-  }
-  if (p === '/api/youtube/connect' && method === 'POST') {
-    const oauth = require('./lib/youtube/oauth');
-    const state = oauth.createState();
-    // bind the flow to this browser: the signed state travels in an HttpOnly cookie and must
-    // match the `state` Google echoes back on the callback (CSRF protection).
-    res.setHeader('set-cookie', `yt_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/youtube/callback; Max-Age=600`);
-    const url = oauth.buildAuthUrl({ redirectUri: oauth.redirectUri(req), state });
-    return json(res, 200, { ok: true, url });
-  }
-  if (p === '/api/youtube/status' && method === 'GET') {
-    const oauth = require('./lib/youtube/oauth');
-    const c2 = cfgLib.loadConfig();
-    const t = oauth.loadToken();
-    return json(res, 200, {
-      hasCredentials: oauth.hasCredentials(c2),
-      hasToken: !!t,
-      obtainedAt: (t && (t.refreshed_at || t.obtained_at)) || null,
-      scopes: (t && t.scope) ? t.scope.split(' ') : oauth.SCOPES,
+  if (pathname.startsWith('/auth/')) return handleAuth(req, res, url);
+  if (/^\/api\/(youtube|instagram|facebook|google)\/(connect|status|credentials)$/.test(pathname)) return handleAuthApi(req, res, url);
+
+  if (pathname === '/api/state' && method === 'GET') {
+    return sendJson(res, 200, {
+      workDir: cfg.getWorkDir(),
+      startup: startup,
+      agents: agents.primaryAgents().map(agentInfo),
+      subagents: agents.subagents().map(agentInfo),
+      commands: Object.values(commands.loadCommands()).map((c) => ({ name: c.name, description: c.description })),
+      skills: Object.values(skills.loadSkills(cfg.loadConfig())).map((x) => ({ name: x.name, description: x.description })),
+      lsp: lsp.available(cfg.loadConfig()),
     });
   }
-  if (p === '/auth/youtube/callback' && method === 'GET') {
-    const oauth = require('./lib/youtube/oauth');
-    const code = url.searchParams.get('code');
-    const err = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    const cookieState = parseCookies(req).yt_oauth_state || '';
-    // clear the one-time cookie regardless of outcome
-    res.setHeader('set-cookie', 'yt_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/youtube/callback; Max-Age=0');
-    const done = (status, html) => {
-      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
-<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
-.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
-.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
-<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>YouTube agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
-<p style="color:#aaa">${status === 200 ? 'Full studio scopes granted. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(err || 'no code returned')}</p></div></body></html>`);
-    };
-    if (err) return done(400, err);
-    // CSRF: the state Google echoes must match the signed cookie this server handed out.
-    if (!state || !cookieState || state !== cookieState || !oauth.verifyState(state)) {
-      log.warn('youtube', 'OAuth callback rejected: state missing or mismatched (possible CSRF)');
-      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
-    }
-    if (!code) return done(400, 'no authorization code in the callback');
-    try {
-      await oauth.exchangeCode(code, { redirectUri: oauth.redirectUri(req) });
-      return done(200);
-    } catch (e) {
-      log.error('youtube', 'OAuth callback failed', e);
-      return done(400, e.message);
-    }
-  }
-  if (p === '/auth/instagram/connect' && method === 'GET') {
-    const ig = require('./lib/instagram');
-    try {
-      const state = ig.createState();
-      res.setHeader('set-cookie', `ig_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=600`);
-      const port = (server.address() && server.address().port) || PORT;
-      return redirect(res, ig.buildAuthUrl({ redirectUri: ig.redirectUri({ port }), state }));
-    } catch (e) {
-      return json(res, 400, { error: e.message });
-    }
-  }
-  if (p === '/api/instagram/connect' && method === 'POST') {
-    const ig = require('./lib/instagram');
-    const state = ig.createState();
-    res.setHeader('set-cookie', `ig_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=600`);
-    const port = (server.address() && server.address().port) || PORT;
-    const url = ig.buildAuthUrl({ redirectUri: ig.redirectUri({ port }), state });
-    return json(res, 200, { ok: true, url });
-  }
-  if (p === '/api/instagram/status' && method === 'GET') {
-    const ig = require('./lib/instagram');
-    try {
-      return json(res, 200, ig.status());
-    } catch (e) {
-      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
-    }
-  }
-  if (p === '/auth/instagram/callback' && method === 'GET') {
-    const ig = require('./lib/instagram');
-    const code = url.searchParams.get('code');
-    const err = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    const cookieState = parseCookies(req).ig_oauth_state || '';
-    res.setHeader('set-cookie', 'ig_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/instagram/callback; Max-Age=0');
-    const done = (status, msg) => {
-      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
-<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
-.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
-.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
-<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Instagram agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
-<p style="color:#aaa">${status === 200 ? 'Instagram Business/Creator connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
-    };
-    if (!state || !cookieState || state !== cookieState || !ig.verifyState(state)) {
-      log.warn('instagram', 'OAuth callback rejected: state missing or mismatched');
-      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
-    }
-    if (err) return done(400, err);
-    if (!code) return done(400, 'no authorization code in the callback');
-    try {
-      const port = (server.address() && server.address().port) || PORT;
-      await ig.completeAuthorization(code, { redirectUri: ig.redirectUri({ port }) });
-      return done(200);
-    } catch (e) {
-      log.error('instagram', 'OAuth callback failed', e);
-      return done(400, e.message);
-    }
+
+  if (pathname === '/api/workdir' && method === 'POST') {
+    if (running.size) throw new Error('stop running agents before changing directory');
+    const body = await readBody(req);
+    const dir = cfg.setWorkDir(body.dir);
+    mcp.stop(); lsp.stop(); procs.killAll();
+    pruneToolOutput();
+    if (cfg.loadConfig().snapshots !== false) snapshot.warmUp().catch(log.swallow('snapshot', 'warm-up failed'));
+    return sendJson(res, 200, { workDir: dir, latest: await sessions.latest() });
   }
 
-  if (p === '/auth/facebook/connect' && method === 'GET') {
-    const fb = require('./lib/facebook');
-    try {
-      const state = fb.createState();
-      res.setHeader('set-cookie', `fb_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=600`);
-      const port = (server.address() && server.address().port) || PORT;
-      return redirect(res, fb.buildAuthUrl({ redirectUri: fb.redirectUri({ port }), state }));
-    } catch (e) {
-      return json(res, 400, { error: e.message });
-    }
-  }
-  if (p === '/api/facebook/connect' && method === 'POST') {
-    const fb = require('./lib/facebook');
-    const state = fb.createState();
-    res.setHeader('set-cookie', `fb_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=600`);
-    const port = (server.address() && server.address().port) || PORT;
-    const urlFb = fb.buildAuthUrl({ redirectUri: fb.redirectUri({ port }), state });
-    return json(res, 200, { ok: true, url: urlFb });
-  }
-  if (p === '/api/facebook/status' && method === 'GET') {
-    const fb = require('./lib/facebook');
-    try {
-      return json(res, 200, fb.status());
-    } catch (e) {
-      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
-    }
-  }
-  if (p === '/auth/facebook/callback' && method === 'GET') {
-    const fb = require('./lib/facebook');
-    const code = url.searchParams.get('code');
-    const err = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    const cookieState = parseCookies(req).fb_oauth_state || '';
-    res.setHeader('set-cookie', 'fb_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/facebook/callback; Max-Age=0');
-    const done = (status, msg) => {
-      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
-<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
-.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
-.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
-<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Facebook agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
-<p style="color:#aaa">${status === 200 ? 'Pages connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
-    };
-    if (!state || !cookieState || state !== cookieState || !fb.verifyState(state)) {
-      log.warn('facebook', 'OAuth callback rejected: state missing or mismatched');
-      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
-    }
-    if (err) return done(400, err);
-    if (!code) return done(400, 'no authorization code in the callback');
-    try {
-      const port = (server.address() && server.address().port) || PORT;
-      await fb.completeAuthorization(code, { redirectUri: fb.redirectUri({ port }) });
-      return done(200);
-    } catch (e) {
-      log.error('facebook', 'OAuth callback failed', e);
-      return done(400, e.message);
-    }
+  if (pathname === '/api/config' && method === 'GET') return sendJson(res, 200, llm.maskConfig(cfg.loadConfig()));
+  if (pathname === '/api/config' && (method === 'PUT' || method === 'POST')) return sendJson(res, 200, llm.maskConfig(cfg.saveConfig(await readBody(req))));
+  // context usage badge: window of the model + tokens used by the session (0 for a new session)
+  if (pathname === '/api/context' && method === 'GET') {
+    const sid = url.searchParams.get('session');
+    return sendJson(res, 200, await contextInfo(url.searchParams.get('model'), sid ? await sessions.get(sid).catch(() => null) : null));
   }
 
-  if (p === '/auth/google/connect' && method === 'GET') {
-    const g = require('./lib/google');
-    try {
-      const state = g.createState();
-      res.setHeader('set-cookie', `g_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600`);
-      const port = (server.address() && server.address().port) || PORT;
-      return redirect(res, g.buildAuthUrl({ redirectUri: g.redirectUri({ port }), state }));
-    } catch (e) {
-      return json(res, 400, { error: e.message });
-    }
-  }
-  if (p === '/api/google/connect' && method === 'POST') {
-    const g = require('./lib/google');
-    const state = g.createState();
-    res.setHeader('set-cookie', `g_oauth_state=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600`);
-    const port = (server.address() && server.address().port) || PORT;
-    const urlG = g.buildAuthUrl({ redirectUri: g.redirectUri({ port }), state });
-    return json(res, 200, { ok: true, url: urlG });
-  }
-  if (p === '/api/google/status' && method === 'GET') {
-    const g = require('./lib/google');
-    try {
-      return json(res, 200, g.status());
-    } catch (e) {
-      return json(res, 200, { hasCredentials: false, hasToken: false, error: e.message });
-    }
-  }
-  if (p === '/auth/google/callback' && method === 'GET') {
-    const g = require('./lib/google');
-    const code = url.searchParams.get('code');
-    const err = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    const cookieState = parseCookies(req).g_oauth_state || '';
-    res.setHeader('set-cookie', 'g_oauth_state=; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=0');
-    const done = (status, msg) => {
-      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent Forge Studio</title>
-<style>body{background:#0f0f0f;color:#f1f1f1;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}
-.card{border:1px solid #333;border-radius:12px;padding:28px 36px;text-align:center;max-width:440px}
-.ok{color:#2ba640;font-size:38px}.bad{color:#ff4d4f;font-size:38px}code{color:#ff6680}</style></head>
-<body><div class="card">${status === 200 ? '<div class="ok">✓</div><h2>Google agent connected</h2>' : '<div class="bad">✗</div><h2>Connection failed</h2>'}
-<p style="color:#aaa">${status === 200 ? 'Google account connected. You can close this tab and return to Agent Forge Studio.' : escapeHtmlHtml(msg || err || 'no code returned')}</p></div></body></html>`);
-    };
-    if (!state || !cookieState || state !== cookieState || !g.verifyState(state)) {
-      log.warn('google', 'OAuth callback rejected: state missing or mismatched');
-      return done(400, 'invalid or expired OAuth state — start the connection again from the app');
-    }
-    if (err) return done(400, err);
-    if (!code) return done(400, 'no authorization code in the callback');
-    try {
-      const port = (server.address() && server.address().port) || PORT;
-      await g.completeAuthorization(code, { redirectUri: g.redirectUri({ port }) });
-      return done(200);
-    } catch (e) {
-      log.error('google', 'OAuth callback failed', e);
-      return done(400, e.message);
-    }
+  if (pathname === '/api/defaults' && method === 'GET') return sendJson(res, 200, cfg.DEFAULT_CONFIG);
+
+  if (pathname === '/api/models' && method === 'GET') {
+    const models = await llm.listAll(cfg.loadConfig());
+    return sendJson(res, 200, { models, providers: Object.values(llm.providersOf(cfg.loadConfig())).map((p) => ({ id: p.id, type: p.type, endpoint: p.endpoint })) });
   }
 
+  if (pathname === '/api/providers/test' && method === 'POST') {
+    const b = await readBody(req);
+    const saved = llm.providersOf(cfg.loadConfig())[b.id] || {};
+    const key = typeof b.apiKey === 'string' && !b.apiKey.startsWith('••••') ? b.apiKey : saved.apiKey;
+    const type = ['openai', 'anthropic'].includes(b.type) ? b.type : 'ollama';
+    const models = await llm.listModels({ type, endpoint: b.endpoint, apiKey: key, headers: b.headers });
+    return sendJson(res, 200, { ok: true, count: models.length, models: models.slice(0, 50).map((m) => m.name) });
+  }
 
-  // ---- models ----
-  if (p === '/api/models' && method === 'GET') {
-    const c = cfgLib.loadConfig();
-    const providerId = url.searchParams.get('provider') || c.defaultProvider || 'default';
-    const provider = llm.resolveProvider(c, providerId);
-    let models = [];
-    let error = null;
-    try {
-      const mod = { ollama: () => require('./lib/ollama'), openai: () => require('./lib/openai'), anthropic: () => require('./lib/anthropic') }[provider.type]();
-      models = await mod.listModels(provider);
-    } catch (e) {
-      error = e.message;
-      models = [{ id: '⚠ ' + e.message.slice(0, 80), name: '⚠ ' + e.message.slice(0, 80), error: e.message }];
+  if (pathname === '/api/processes' && method === 'GET') {
+    const sid = url.searchParams.get('sessionId');
+    return sendJson(res, 200, { processes: procs.list(), ...(sid ? { sessionRunning: running.has(sid) } : {}) });
+  }
+  if (seg[1] === 'processes' && seg.length === 3 && method === 'DELETE') return sendJson(res, 200, procs.kill(seg[2]));
+
+  if (pathname === '/api/mcp' && method === 'GET') {
+    await mcp.ensureStarted(cfg.loadConfig());
+    return sendJson(res, 200, { servers: mcp.status() });
+  }
+  if (pathname === '/api/mcp/reload' && method === 'POST') return sendJson(res, 200, { servers: await mcp.reload(cfg.loadConfig()) });
+
+  if (pathname === '/api/agents' && method === 'GET') {
+    return sendJson(res, 200, { agents: Object.values(agents.loadAgents()).map(agentInfo) });
+  }
+
+  /* --- files in the working directory --- */
+  // one directory level at a time (the UI expands folders lazily, so a huge folder never freezes anything)
+  if (pathname === '/api/tree' && method === 'GET') {
+    const dir = ws.safeResolve(url.searchParams.get('path') || '') && (url.searchParams.get('path') || '');
+    const level = await ws.listDir(dir);
+    return sendJson(res, 200, { workDir: cfg.getWorkDir(), ...level, tree: level.entries });
+  }
+  if (pathname === '/api/download' && (method === 'GET' || method === 'HEAD')) {
+    const rel = url.searchParams.get('path') || '';
+    const full = ws.safeResolve(rel);
+    const st = await fsp.stat(full).catch(() => null);
+    if (!st) throw new Error('not found');
+    // never hand out a build output that a running process is still writing (partial / corrupt file)
+    const blocked = downloadBlockedReason(rel, st, procs.list().some((p) => p.running));
+    if (blocked) return sendJson(res, 409, { error: blocked, busy: true });
+    if (st.isDirectory()) {
+      const base = path.basename(full) || 'folder';
+      const safeName = base.replace(/[^\w.-]+/g, '_') || 'folder';
+      res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${safeName}.zip"` });
+      if (method === 'HEAD') return res.end();
+      const args = ['-r', '-q', '-', '.'];
+      const proc = spawn('zip', args, { cwd: full, stdio: ['ignore', 'pipe', 'pipe'] });
+      proc.stdout.pipe(res);
+      proc.stderr.on('data', () => {});
+      proc.on('error', (e) => { if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' }); if (!res.writableEnded) res.end('zip failed: ' + e.message); });
+      proc.on('close', (code) => { if (!res.writableEnded) { if (code !== 0 && !res.headersSent) { res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('zip failed'); } else if (res.writableEnded) {} else res.end(); } });
+      res.on('close', () => { try { proc.kill('SIGKILL'); } catch { /* already finished */ } });   // client left: stop zipping
+      return;
     }
-    return json(res, 200, { models, provider: { id: provider.id, type: provider.type, endpoint: provider.endpoint }, error });
+    // regular file: Content-Length + Range (Pause/Resume), streamed from disk
+    return serveFile(req, res, full, st, { filename: path.basename(full) });
+  }
+  if (pathname === '/api/logs' && method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(log.tail(Number(url.searchParams.get('lines')) || 200) + '\n');
+  }
+  if (pathname === '/api/health' && method === 'GET') {
+    return sendJson(res, 200, { ok: true, node: process.version, workDir: cfg.getWorkDir(), studioDir: cfg.studioDir(), running: running.size, snapshots: snapshot.status() || 'on', uptime: Math.round(process.uptime()) });
+  }
+  if (pathname === '/api/file') {
+    const rel = url.searchParams.get('path') || '';
+    if (method === 'GET') return sendJson(res, 200, { path: rel, content: await ws.readFile(rel) });
+    if (method === 'PUT') { const b = await readBody(req); return sendJson(res, 200, await ws.writeFile(b.path || rel, b.content)); }
+    if (method === 'DELETE') return sendJson(res, 200, await ws.deleteFile(rel));
   }
 
-  // ---- sessions ----
-  if (p === '/api/sessions' && method === 'GET') {
-    const archived = url.searchParams.get('archived') === '1';
-    return json(res, 200, { sessions: sessions.listSessions({ archived }) });
-  }
-  if (p === '/api/sessions' && method === 'POST') {
-    const body = await readBody(req);
-    const c = cfgLib.loadConfig();
-    const s = sessions.createSession({ title: body.title || 'New session', agent: body.agent || c.agent || 'create' });
-    return json(res, 200, s);
-  }
-  let m;
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)$/.exec(p))) {
-    if (method === 'GET') return json(res, 200, sessions.loadSession(m[1]));
-    if (method === 'DELETE') return json(res, 200, { ok: sessions.deleteSession(m[1]) });
-  }
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)\/archive$/.exec(p)) && method === 'POST') {
-    const body = await readBody(req);
-    return json(res, 200, sessions.archiveSession(m[1], body.archived !== false));
-  }
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)\/title$/.exec(p)) && method === 'POST') {
-    const body = await readBody(req);
-    return json(res, 200, sessions.setTitle(m[1], body.title));
-  }
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)\/agent$/.exec(p)) && method === 'POST') {
-    const body = await readBody(req);
-    return json(res, 200, sessions.setAgent(m[1], body.agent));
-  }
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)\/messages\/edit$/.exec(p)) && method === 'POST') {
-    const body = await readBody(req);
-    return json(res, 200, sessions.editMessage(m[1], body.index, body.content));
-  }
-
-  // ---- run (SSE) ----
-  if ((m = /^\/api\/sessions\/([0-9a-f-]+)\/run$/.exec(p)) && method === 'POST') {
-    const body = await readBody(req);
-    const session = sessions.loadSession(m[1]);
-    sseStart(res);
-    const controller = new AbortController();
-    req.on('close', () => controller.abort());
-    let errored = false;
-    const emit = (event, data) => { if (event === 'error') errored = true; sseSend(res, event, data); };
-    try {
-      if (body.message != null && String(body.message).trim()) {
-        const text = String(body.message);
-        const expanded = commandsLib.expand(text);
-        sessions.append(session, { role: 'user', content: expanded ? expanded.text : text });
-        if (expanded) sseSend(res, 'agent', { command: expanded.name });
+  /* --- sessions --- */
+  if (seg[1] === 'sessions') {
+    if (seg.length === 2) {
+      if (method === 'GET') return sendJson(res, 200, { sessions: (await sessions.list()).map((r) => ({ ...r, running: running.has(r.id) })) });
+      if (method === 'POST') {
+        const b = await readBody(req);
+        const c = cfg.loadConfig();
+        return sendJson(res, 201, await sessions.create({ agent: b.agent || c.agent || 'build', model: b.model || c.model, title: b.title || '' }));
       }
-      const c = cfgLib.loadConfig();
-      const gate = require('./lib/permission').makeGate(
-        Object.assign({}, c.permission, (agentsLib.getAgent(session.agent || c.agent) || {}).permission),
-        async (info) => new Promise((resolve) => {
-          const id = 'perm_' + crypto.randomUUID().slice(0, 8);
-          pending.set(id, resolve);
-          sseSend(res, 'permission_request', { id, ...info });
-          setTimeout(() => {
-            if (pending.has(id)) { pending.delete(id); resolve(false); }
-          }, 300000);
-        }),
-      );
-      await agentLib.runLoop({
-        session,
-        cfg: c,
-        emit,
-        signal: controller.signal,
-        gate,
-        onQuestion: async (question, options) => new Promise((resolve) => {
-          const id = 'q_' + crypto.randomUUID().slice(0, 8);
-          pending.set(id, resolve);
-          sseSend(res, 'question', { id, question, options });
-          setTimeout(() => {
-            if (pending.has(id)) { pending.delete(id); resolve(''); }
-          }, 600000);
-        }),
-      });
-    } catch (e) {
-      log.error('server', 'run failed', e);
-      if (!errored) sseSend(res, 'error', { message: explain(e) });
-      sseSend(res, 'done', { text: '', iterations: 0 });
     }
-    res.end();
+    const id = seg[2];
+    if (seg.length === 3) {
+      if (method === 'GET') {
+        const s = await sessions.get(id);
+        // `history` = messages that were summarised out of the model's context: the chat still shows them unchanged (huge tool output is clipped for transport)
+        const history = (await sessions.archiveRead(id, s.archived || 0)).map((m) => (m.role === 'tool' && typeof m.content === 'string' && m.content.length > 20000 ? { ...m, content: m.content.slice(0, 20000) + '\n… (clipped in the chat view; /export has everything)' } : m));
+        return sendJson(res, 200, { ...s, history, running: running.has(id), context: await contextInfo(s.model, s) });
+      }
+      if (method === 'DELETE') { running.get(id)?.ac.abort(); return sendJson(res, 200, await sessions.remove(id)); }
+      if (method === 'PUT' || method === 'PATCH') {
+        const b = await readBody(req);
+        const s = await sessions.get(id);
+        if (typeof b.title === 'string') s.title = b.title.slice(0, 120);
+        if (typeof b.agent === 'string' && agents.getAgent(b.agent)) s.agent = b.agent;
+        if (typeof b.model === 'string') s.model = b.model;
+        await sessions.save(s);
+        return sendJson(res, 200, sessions.summary(s));
+      }
+    }
+    if (seg.length === 4 && seg[3] === 'fork' && method === 'POST') {
+      const b = await readBody(req);
+      return sendJson(res, 201, await sessions.fork(id, b.upTo));
+    }
+    if (seg.length === 4 && seg[3] === 'rewind' && method === 'POST') {          // drop a user message and everything after it (Edit / Resend)
+      if (running.has(id)) throw new Error('session is running; stop it first');
+      const b = await readBody(req);
+      const s = await sessions.get(id);
+      const i = Number(b.index);
+      if (!Number.isInteger(i) || i < 0 || i >= s.messages.length || s.messages[i].role !== 'user' || s.messages[i].summary) throw new Error('can only rewind to one of your own messages');
+      s.messages = s.messages.slice(0, i);
+      s.lastPrompt = 0; s.lastCount = 0; s.revert = null; s.interrupted = false;
+      await sessions.save(s);
+      return sendJson(res, 200, { ok: true, messages: i });
+    }
+    if (seg.length === 5 && seg[3] === 'messages' && (method === 'PATCH' || method === 'PUT')) {   // edit an assistant reply in place
+      if (running.has(id)) throw new Error('session is running; stop it first');
+      const b = await readBody(req);
+      const s = await sessions.get(id);
+      const m = s.messages[parseInt(seg[4], 10)];
+      if (!m || m.summary || m.role !== 'assistant' || typeof b.content !== 'string') throw new Error('only assistant replies can be edited in place');
+      m.content = b.content;
+      await sessions.save(s);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (seg.length === 4 && seg[3] === 'compact' && method === 'POST') {
+      const c = cfg.loadConfig();
+      const s = await sessions.get(id);
+      const r = await compactSession({ session: s, model: s.model || c.model, config: c });
+      return sendJson(res, 200, r);
+    }
+    if (seg.length === 4 && (seg[3] === 'undo' || seg[3] === 'redo') && method === 'POST') {
+      if (running.has(id)) throw new Error('session is running; stop it first');
+      const s = await sessions.get(id);
+      const r = seg[3] === 'undo' ? await journal.undo(s) : await journal.redo(s);
+      await sessions.save(s);
+      return sendJson(res, 200, r);
+    }
+    if (seg.length === 4 && seg[3] === 'export' && method === 'GET') {
+      const format = url.searchParams.get('format') === 'json' ? 'json' : 'md';
+      if (format === 'json') return sendJson(res, 200, await sessions.exportTree(id), { 'Content-Disposition': `attachment; filename="${id}.json"` });
+      const s = await sessions.get(id);
+      const md = require('./lib/export').toMarkdown(s, await sessions.transcript(s));
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${id}.md"` });
+      return res.end(md);
+    }
+    if (seg.length === 4 && seg[3] === 'summaries' && method === 'GET') {
+      const s = await sessions.get(id);
+      let list = s.summaries || [];
+      if (!list.length) {   // sessions summarised before summaries were recorded: show the live one
+        const live = s.messages.find((x) => x.summary && x.role === 'user');
+        if (live) list = [{ n: 1, ts: s.updatedAt, text: live.content.replace(/^Summary of the earlier conversation:\n/, ''), covered: null, legacy: true }];
+      }
+      return sendJson(res, 200, { summaries: list, archived: s.archived || 0, compactions: s.compactions || 0 });
+    }
+  }
+
+  if (pathname === '/api/upload' && method === 'POST') {
+    const limit = (Number(cfg.loadConfig().maxUploadMB) || 500) * 1048576;
+    return sendJson(res, 200, await attach.store(req, url.searchParams.get('name') || 'file', limit));
+  }
+  const up = pathname.match(/^\/api\/uploads\/([A-Za-z0-9][A-Za-z0-9._-]*)$/);
+  if (up && method === 'GET') {
+    const file = attach.fileOf(up[1]);
+    const st = await fs.promises.stat(file).catch(() => null);
+    if (!st) return sendJson(res, 404, { error: 'no such attachment' });
+    const ext = attach.extOf(up[1]);
+    const inlineImg = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }[ext];
+    res.writeHead(200, {
+      'Content-Type': inlineImg || 'application/octet-stream', 'Content-Length': st.size, 'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, max-age=3600',
+      ...(inlineImg ? {} : { 'Content-Disposition': `attachment; filename="${up[1].slice(9)}"` }),   // never render uploaded html/svg from our origin
+    });
+    return fs.createReadStream(file).pipe(res);
+  }
+
+  if (pathname === '/api/permission' && method === 'POST') {
+    const b = await readBody(req);
+    const p = pendingPermissions.get(b.id);
+    if (!p) throw new Error('no such pending permission');
+    pendingPermissions.delete(b.id);
+    p.resolve(['once', 'always'].includes(b.reply) ? b.reply : 'reject');
+    if (running.get(p.sessionId)) publish(running.get(p.sessionId), { type: 'permission_resolved', id: b.id, reply: b.reply });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/answer' && method === 'POST') {
+    const b = await readBody(req);
+    const q = pendingQuestions.get(b.id);
+    if (!q) throw new Error('no such pending question');
+    pendingQuestions.delete(b.id);
+    q.resolve(String(b.answer ?? ''));
+    if (running.get(q.sessionId)) publish(running.get(q.sessionId), { type: 'question_resolved', id: b.id, answer: String(b.answer ?? '') });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/shutdown' && method === 'POST') {
+    // refuse cross-site requests so a random web page can't stop the studio
+    const origin = req.headers.origin;
+    if (origin) { try { if (new URL(origin).host !== req.headers.host) return sendJson(res, 403, { error: 'forbidden' }); } catch { return sendJson(res, 403, { error: 'forbidden' }); } }
+    sendJson(res, 200, { ok: true });
+    console.log('shutdown requested from the UI');
+    setTimeout(() => process.exit(0), 150);   // 'exit' hooks stop background processes, MCP and LSP children
     return;
   }
 
-  // ---- auto-forge (one-click end-to-end workflow, SSE) ----
-  if (p === '/api/workflow/autoforge' && method === 'POST') {
-    const body = await readBody(req);
-    const idea = String(body.idea || '').trim();
-    sseStart(res);
-    const controller = new AbortController();
-    req.on('close', () => controller.abort());
-    const emit = (event, data) => sseSend(res, event, data);
-    try {
-      if (!idea) { sseSend(res, 'error', { message: 'an idea is required to start Auto-Forge' }); sseSend(res, 'done', { text: '' }); res.end(); return; }
-      const autoforge = require('./lib/autoforge');
-      const c = { ...cfgLib.loadConfig(), signal: controller.signal };
-      // the human answers the upload gate through the shared question channel
-      const onQuestion = async (question, options) => new Promise((resolve) => {
-        const id = 'q_' + crypto.randomUUID().slice(0, 8);
-        pending.set(id, resolve);
-        sseSend(res, 'question', { id, question, options });
-        setTimeout(() => { if (pending.has(id)) { pending.delete(id); resolve(''); } }, 600000);
-      });
-      const result = await autoforge.runAutoForge({ idea, cfg: c, emit, signal: controller.signal, onQuestion });
-      if (!result.ok) {
-        sseSend(res, 'error', { message: `Error in Auto-Forge step "${result.failedStep}"`, failedStep: result.failedStep });
-      }
-    } catch (e) {
-      log.error('server', 'autoforge failed', e);
-      sseSend(res, 'error', { message: explain(e) });
-    }
-    sseSend(res, 'done', { text: '' });
-    res.end();
-    return;
+  if (pathname === '/api/abort' && method === 'POST') {
+    const b = await readBody(req);
+    running.get(b.sessionId)?.ac.abort();
+    return sendJson(res, 200, { ok: true });
   }
 
-  // ---- interactive answers ----
-  if (p === '/api/answer' && method === 'POST') {
-    const body = await readBody(req);
-    const resolve = pending.get(body.id);
-    if (resolve) { pending.delete(body.id); resolve(body.answer); }
-    return json(res, 200, { ok: !!resolve });
-  }
-
-  // ---- agents / skills / commands ----
-  if (p === '/api/agents' && method === 'GET') {
-    const all = agentsLib.allAgents();
-    return json(res, 200, { agents: Object.values(all).map((a) => ({ id: a.id, label: a.label || a.id, primary: !!a.primary, subagent: !!a.subagent, voice: !!a.voice })) });
-  }
-  if (p === '/api/skills' && method === 'GET') return json(res, 200, { skills: skillsLib.listSkills() });
-  if (p === '/api/commands' && method === 'GET') return json(res, 200, { commands: Object.values(commandsLib.listCommands()) });
-
-  // ---- GitHub skill hub ----
-  if (p === '/api/skills/discover' && method === 'GET') {
-    const hub = require('./lib/skillhub');
-    try {
-      const data = await hub.discoverSkills(url.searchParams.get('q') || '', { limit: Number(url.searchParams.get('limit')) || 10 });
-      return json(res, 200, { ok: true, ...data, installed: hub.installedSkills() });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message, repos: [] });
-    }
-  }
-  if (p === '/api/skills/repo' && method === 'GET') {
-    const hub = require('./lib/skillhub');
-    const source = url.searchParams.get('source') || '';
-    try {
-      return json(res, 200, { ok: true, ...(await hub.listGitHubSkills(source)) });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message, skills: [] });
-    }
-  }
-  if (p === '/api/skills/install/preview' && method === 'POST') {
-    const body = await readBody(req);
-    const hub = require('./lib/skillhub');
-    try {
-      const out = await hub.previewInstall(String(body.source || ''), {
-        id: body.id ? String(body.id) : undefined,
-        path: body.path ? String(body.path) : undefined,
-        all: !!body.all,
-      });
-      return json(res, 200, out);
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message });
-    }
-  }
-  if (p === '/api/skills/install/confirm' && method === 'POST') {
-    const body = await readBody(req);
-    const hub = require('./lib/skillhub');
-    try {
-      const out = await hub.confirmInstall(String(body.source || ''), {
-        sha: String(body.sha || body.commit || ''),
-        previewToken: String(body.previewToken || body.token || ''),
-        force: !!body.force,
-      });
-      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message, skills: skillsLib.listSkills() });
-    }
-  }
-  if (p === '/api/skills/install' && method === 'POST') {
-    const body = await readBody(req);
-    const hub = require('./lib/skillhub');
-    try {
-      if (body.sha || body.commit || body.previewToken) {
-        const out = await hub.confirmInstall(String(body.source || ''), {
-          sha: String(body.sha || body.commit || ''),
-          previewToken: String(body.previewToken || body.token || ''),
-          force: !!body.force,
-        });
-        return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
-      }
-      const out = await hub.previewInstall(String(body.source || ''), {
-        id: body.id ? String(body.id) : undefined,
-        path: body.path ? String(body.path) : undefined,
-        all: !!body.all,
-      });
-      return json(res, 200, out);
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message, skills: skillsLib.listSkills() });
-    }
-  }
-  if (p === '/api/skills/uninstall' && method === 'POST') {
-    const body = await readBody(req);
-    const hub = require('./lib/skillhub');
-    try {
-      const out = hub.uninstallSkill(String(body.id || ''));
-      return json(res, 200, { ...out, skills: skillsLib.listSkills(), installed: hub.installedSkills() });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message });
-    }
-  }
-  if (p === '/api/skills/installed' && method === 'GET') {
-    const hub = require('./lib/skillhub');
-    return json(res, 200, { installed: hub.installedSkills(), skills: skillsLib.listSkills() });
-  }
-
-  // ---- open-web research / download (also available through the CLI) ----
-  if (p === '/api/research' && method === 'GET') {
-    const webLib = require('./lib/web');
-    const q = url.searchParams.get('q') || '';
-    try {
-      return json(res, 200, { ok: true, ...(await webLib.research(q, { count: Number(url.searchParams.get('count')) || 8, fetchCount: Number(url.searchParams.get('fetch')) || 4 })) });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message, results: [] });
-    }
-  }
-  if (p === '/api/download' && method === 'POST') {
-    const body = await readBody(req);
-    const webLib = require('./lib/web');
-    try {
-      const dest = String(body.path || '').replace(/\\/g, '/');
-      const out = await webLib.downloadUrl(String(body.url || ''), {
-        destDir: dest ? (require('node:path').posix.dirname(dest) === '.' ? '' : require('node:path').posix.dirname(dest)) : undefined,
-        filename: dest ? require('node:path').posix.basename(dest) : body.filename,
-        overwrite: !!body.overwrite,
-      });
-      return json(res, 200, out);
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message });
-    }
-  }
-
-  // ---- files ----
-  if (p === '/api/files' && method === 'GET') {
-    const dirPath = url.searchParams.get('path') || '.';
-    const abs = ws.safeResolve(dirPath);
-    return json(res, 200, { files: ws.listDir(abs, { recursive: false }), cwd: ws.rel(abs) });
-  }
-  if (p === '/api/file' && method === 'GET') {
-    const f = ws.readFile(url.searchParams.get('path') || '');
-    return json(res, 200, f);
-  }
-  if (p === '/api/file' && method === 'POST') {
-    const body = await readBody(req);
-    const r = ws.writeFile(body.path, body.content);
-    return json(res, 200, r);
-  }
-  if (p === '/api/file' && method === 'DELETE') {
-    const body = await readBody(req);
-    const r = ws.deleteFile(body.path);
-    return json(res, 200, r);
-  }
-
-  // ---- logs ----
-  if (p === '/api/logs' && method === 'GET') {
-    return json(res, 200, { log: log.tail(Number(url.searchParams.get('lines')) || 200) });
-  }
-
-  // ---- automation browser (visible Chromium the agent drives) ----
-  if (p === '/api/browser/open' && method === 'POST') {
-    if (!browser.havePlaywright()) {
-      return json(res, 200, { ok: false, error: 'playwright not installed — run: npm install playwright && npx playwright install chromium' });
-    }
-    try {
-      const { page } = await browser.ensureBrowser({ headless: false });
-      if (!/studio\.youtube\.com/.test(page.url())) {
-        await page.goto('https://studio.youtube.com', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      }
-      return json(res, 200, { ok: true, url: page.url(), auth: browser.authInfo() });
-    } catch (e) {
-      log.warn('browser', 'open failed', e);
-      return json(res, 200, { ok: false, error: e.message });
-    }
-  }
-  if (p === '/api/browser/close' && method === 'POST') {
-    const r = await browser.closeBrowser();
-    return json(res, 200, { ok: true, ...r });
-  }
-
-  // ---- quit ----
-  if (p === '/api/quit' && method === 'POST') {
-    json(res, 200, { ok: true });
+  if (pathname === '/api/quit' && method === 'POST') {
+    sendJson(res, 200, { ok: true });
     setTimeout(() => process.exit(0), 150);
     return;
   }
 
-  return json(res, 404, { error: 'not found' });
-}
-
-// ---- localhost API hardening -----------------------------------------------------------------
-// The server holds powerful capabilities (run commands, edit files, upload to YouTube). It binds
-// to 127.0.0.1 by default, but a browser can still be tricked by DNS-rebinding or a cross-site
-// request into hitting it. So every /api/* and /auth/* request must prove it is same-origin:
-//   - Host header hostname must be a loopback name (or the explicitly configured bind host);
-//   - an Origin header, when present, must be an http(s) origin whose host is likewise allowed.
-// Requests that fail are rejected with 403 before any handler runs.
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-/** Hostnames explicitly permitted in addition to loopback (from --host/HOST, unless it is a wildcard bind). */
-function extraAllowedHosts() {
-  const set = new Set();
-  const h = String(HOST || '').trim().toLowerCase();
-  if (h && h !== '0.0.0.0' && h !== '::' && h !== '::0') set.add(h);
-  return set;
-}
-
-/** True when a raw Host header value (host[:port], may be IPv6) names an allowed host. */
-function hostAllowed(hostHeader, extra = extraAllowedHosts()) {
-  if (!hostHeader) return false;
-  let hostname = String(hostHeader).trim().toLowerCase();
-  if (hostname.startsWith('[')) {                      // IPv6 literal, e.g. [::1]:4312
-    const end = hostname.indexOf(']');
-    if (end >= 0) hostname = hostname.slice(0, end + 1);
-  } else {
-    const colon = hostname.lastIndexOf(':');
-    if (colon >= 0 && hostname.indexOf(':') === colon) hostname = hostname.slice(0, colon); // strip single :port
+  /* --- agent-forge platform: skill hub, research, downloads, Auto-Forge, browser --- */
+  if (pathname === '/api/commands' && method === 'GET') {
+    return sendJson(res, 200, { commands: Object.values(commands.loadCommands()) });
   }
-  return LOOPBACK_HOSTS.has(hostname) || extra.has(hostname);
+  if (pathname === '/api/skills/discover' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    try {
+      const data = await hub.discoverSkills(url.searchParams.get('q') || '', { limit: Number(url.searchParams.get('limit')) || 10 });
+      return sendJson(res, 200, { ok: true, ...data, installed: hub.installedSkills() });
+    } catch (e) { return sendJson(res, 200, { ok: false, error: e.message, repos: [] }); }
+  }
+  if (pathname === '/api/skills/repo' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    try { return sendJson(res, 200, { ok: true, ...(await hub.listGitHubSkills(url.searchParams.get('source') || '')) }); }
+    catch (e) { return sendJson(res, 200, { ok: false, error: e.message, skills: [] }); }
+  }
+  if (pathname === '/api/skills/install/preview' && method === 'POST') {
+    const b = await readBody(req); const hub = require('./lib/skillhub');
+    try { return sendJson(res, 200, await hub.previewInstall(String(b.source || ''), { id: b.id ? String(b.id) : undefined, path: b.path ? String(b.path) : undefined, all: !!b.all })); }
+    catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
+  }
+  if ((pathname === '/api/skills/install' || pathname === '/api/skills/install/confirm') && method === 'POST') {
+    const b = await readBody(req); const hub = require('./lib/skillhub');
+    try {
+      if (b.sha || b.commit || b.previewToken || b.token || pathname.endsWith('/confirm')) {
+        const out = await hub.confirmInstall(String(b.source || ''), { sha: String(b.sha || b.commit || ''), previewToken: String(b.previewToken || b.token || ''), force: !!b.force });
+        return sendJson(res, 200, { ...out, skills: skills.listSkills(), installed: hub.installedSkills() });
+      }
+      return sendJson(res, 200, await hub.previewInstall(String(b.source || ''), { id: b.id ? String(b.id) : undefined, path: b.path ? String(b.path) : undefined, all: !!b.all }));
+    } catch (e) { return sendJson(res, 200, { ok: false, error: e.message, skills: skills.listSkills() }); }
+  }
+  if (pathname === '/api/skills/uninstall' && method === 'POST') {
+    const b = await readBody(req); const hub = require('./lib/skillhub');
+    try { const out = hub.uninstallSkill(String(b.id || '')); return sendJson(res, 200, { ...out, skills: skills.listSkills(), installed: hub.installedSkills() }); }
+    catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
+  }
+  if (pathname === '/api/skills/installed' && method === 'GET') {
+    const hub = require('./lib/skillhub');
+    return sendJson(res, 200, { installed: hub.installedSkills(), skills: skills.listSkills() });
+  }
+  if (pathname === '/api/research' && method === 'GET') {
+    const web = require('./lib/web');
+    try { return sendJson(res, 200, { ok: true, ...(await web.research(url.searchParams.get('q') || '', { count: Number(url.searchParams.get('count')) || 8, fetchCount: Number(url.searchParams.get('fetch')) || 4 })) }); }
+    catch (e) { return sendJson(res, 200, { ok: false, error: e.message, results: [] }); }
+  }
+  if (pathname === '/api/download' && method === 'POST') {
+    const b = await readBody(req); const web = require('./lib/web');
+    try {
+      const dest = String(b.path || '').replace(/\\/g, '/');
+      const out = await web.downloadUrl(String(b.url || ''), {
+        destDir: dest ? (path.posix.dirname(dest) === '.' ? '' : path.posix.dirname(dest)) : undefined,
+        filename: dest ? path.posix.basename(dest) : b.filename,
+        overwrite: !!b.overwrite,
+      });
+      return sendJson(res, 200, out);
+    } catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
+  }
+  if (pathname === '/api/files' && method === 'GET') {
+    const dir = url.searchParams.get('path') || '.';
+    const level = await ws.listDir(dir === '.' ? '' : dir);
+    return sendJson(res, 200, { files: level.entries, cwd: dir });
+  }
+  if (pathname === '/api/workflow/autoforge' && method === 'POST') {
+    const b = await readBody(req);
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+    const emit = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ } };
+    res.write(':ok\n\n');
+    const idea = String(b.idea || '').trim();
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+    try {
+      if (!idea) { emit('error', { message: 'an idea is required to start Auto-Forge' }); emit('done', { text: '' }); return res.end(); }
+      const autoforge = require('./lib/autoforge');
+      const c = { ...cfg.loadConfig(), signal: controller.signal };
+      const onQuestion = async (question, options) => new Promise((resolve) => {
+        const id = 'q_' + crypto.randomUUID().slice(0, 8);
+        pendingQuestions.set(id, { resolve, sessionId: 'autoforge' });
+        emit('question', { id, question, options });
+        setTimeout(() => { if (pendingQuestions.has(id)) { pendingQuestions.delete(id); resolve(''); } }, 600000);
+      });
+      const result = await autoforge.runAutoForge({ idea, cfg: c, emit, signal: controller.signal, onQuestion });
+      if (!result.ok) emit('error', { message: `Error in Auto-Forge step "${result.failedStep}"`, failedStep: result.failedStep });
+    } catch (e) {
+      log.error('server', 'autoforge failed', e);
+      emit('error', { message: explain(e) });
+    }
+    emit('done', { text: '' });
+    return res.end();
+  }
+  if (pathname === '/api/browser/open' && method === 'POST') {
+    const browser = require('./lib/browser');
+    if (typeof browser.havePlaywright === 'function' && !browser.havePlaywright()) {
+      return sendJson(res, 200, { ok: false, error: 'playwright not installed — run: npm install playwright && npx playwright install chromium' });
+    }
+    try {
+      const { page } = await browser.ensureBrowser({ headless: false });
+      if (!/studio\.youtube\.com/.test(page.url())) await page.goto('https://studio.youtube.com', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      return sendJson(res, 200, { ok: true, url: page.url(), auth: typeof browser.authInfo === 'function' ? browser.authInfo() : {} });
+    } catch (e) { log.warn('browser', 'open failed', e); return sendJson(res, 200, { ok: false, error: e.message }); }
+  }
+  if (pathname === '/api/browser/close' && method === 'POST') {
+    const browser = require('./lib/browser');
+    const r = typeof browser.closeBrowser === 'function' ? await browser.closeBrowser() : {};
+    return sendJson(res, 200, { ok: true, ...r });
+  }
+
+  return sendJson(res, 404, { error: 'not found' });
 }
 
-/** True when an Origin header value is an allowed http(s) origin. Empty origin is accepted (same-origin/non-CORS). */
-function originAllowed(origin, extra = extraAllowedHosts()) {
-  if (!origin) return true;
-  let u;
-  try { u = new URL(origin); } catch { return false; }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-  return hostAllowed(u.host, extra);
+/* ---------- chat runs (SSE) ----------
+   A run lives on the server, independent of the browser connection: if the tab is closed or the phone suspends the
+   browser, the agent keeps working. Clients (re)attach with GET /api/sessions/:id/attach and get the whole run replayed. */
+
+const sse = (res, ev) => {
+  try { if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch (e) { log.debug('server', 'client stream write failed', e); }
+};
+
+function publish(run, ev) {
+  const last = run.events[run.events.length - 1];
+  if (last && (ev.type === 'token' || ev.type === 'thinking') && last.type === ev.type) last.text += ev.text; // coalesce for replay
+  else run.events.push({ ...ev });
+  if (run.events.length > 30000) run.events.splice(0, 5000);
+  for (const r of run.subs) sse(r, ev);
 }
 
-/** The gate applied to /api/* and /auth/* before routing. Exported for tests. */
-function requestAllowed(headers = {}) {
-  return hostAllowed(headers.host) && originAllowed(headers.origin);
+function subscribe(run, res, { attach }) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  if (attach) {
+    sse(res, { type: 'attach', sessionId: run.id, messages: run.base || [] });
+    for (const ev of run.events) sse(res, ev);
+  }
+  run.subs.add(res);
+  res.on('close', () => run.subs.delete(res));
+}
+
+async function handleAttach(res, id) {
+  const run = running.get(id);
+  if (!run) return sendJson(res, 404, { error: 'not running' });
+  subscribe(run, res, { attach: true });
+}
+
+async function handleChat(req, res) {
+  const body = await readBody(req);
+  const config = cfg.loadConfig();
+  const text = String(body.text || '').trim();
+  const att = (Array.isArray(body.attachments) ? body.attachments : []).slice(0, 12).map((a) => ({ id: String(a.id || ''), name: String(a.name || a.id || '') }));
+  for (const a of att) { try { if (!fs.existsSync(attach.fileOf(a.id))) throw new Error('missing'); } catch { return sendJson(res, 400, { error: `attachment not found: ${a.name || a.id}` }); } }
+  if (!text && !att.length) return sendJson(res, 400, { error: 'empty message' });
+
+  if (body.sessionId && running.has(body.sessionId)) {
+    if (!body.interrupt) return sendJson(res, 409, { error: 'this session is still running — press Stop first (or it will be attached automatically)', running: true });
+    running.get(body.sessionId).ac.abort();
+    for (let i = 0; i < 60 && running.has(body.sessionId); i++) await new Promise((r) => setTimeout(r, 100));
+    if (running.has(body.sessionId)) return sendJson(res, 409, { error: 'could not stop the running session', running: true });
+  }
+
+  const session = body.sessionId ? await sessions.get(body.sessionId) : await sessions.create({ agent: body.agent || config.agent, model: body.model || config.model });
+  if (body.agent && agents.getAgent(body.agent)) session.agent = body.agent;
+  if (body.model) session.model = body.model;
+  const model = session.model || config.model;
+  if (!model) return sendJson(res, 400, { error: 'no model selected' });
+  let agent = agents.getAgent(session.agent) || agents.getAgent('build');
+  if (agent.mode === 'subagent') return sendJson(res, 400, { error: `"${agent.name}" is a subagent; pick a primary agent` });
+
+  waker.onUserMessage(session.id);
+  launchRun({ session, config, agent, model, text, att, res });
+}
+
+/**
+ * Start an agent run on a session. `res` = the SSE response of the browser that sent the message (null for a
+ * wake-up turn started by the studio itself: the browser then attaches via /api/sessions/:id/attach).
+ */
+function launchRun({ session, config, agent, model, text, att, res, wake = false, wakeDisplay }) {
+  const run = { id: session.id, ac: new AbortController(), events: [], subs: new Set(), base: null };
+  running.set(session.id, run);
+  if (res) subscribe(run, res, { attach: false });
+  const emit = (ev) => publish(run, ev);
+  const myPermissions = new Set();
+  const myQuestions = new Set();
+  const askPermission = ({ tool, category, summary }) => new Promise((resolve, reject) => {
+    const id = 'perm_' + crypto.randomBytes(4).toString('hex');
+    myPermissions.add(id);
+    pendingPermissions.set(id, { resolve, reject, sessionId: session.id });
+    run.ac.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    emit({ type: 'permission_request', id, tool, category, summary });
+  });
+  const askUser = ({ question, options }) => new Promise((resolve, reject) => {
+    const id = 'q_' + crypto.randomBytes(4).toString('hex');
+    myQuestions.add(id);
+    pendingQuestions.set(id, { resolve, sessionId: session.id });
+    run.ac.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    emit({ type: 'question', id, question, options });
+  });
+  const heartbeat = setInterval(() => { for (const r of run.subs) { try { if (!r.writableEnded) r.write(': keepalive\n\n'); } catch (e) { log.debug('server', 'keepalive failed', e); } } }, 15000);
+
+  // The run continues even if every client disconnects.
+  (async () => {
+    try {
+      if (!session.title) { session.title = (text || (att[0] && att[0].name) || 'attachment').replace(/\s+/g, ' ').slice(0, 60); session.autoTitle = !!text; }
+      let content = text;
+      let display = wake ? wakeDisplay : undefined;
+      let attachments;
+      const exp = text && !wake ? await commands.expand(text) : null;
+      if (exp) {
+        content = exp.text; display = text;
+        if (exp.command.agent) { const ag = agents.getAgent(exp.command.agent); if (ag && ag.mode !== 'subagent') { session.agent = ag.name; agent = ag; } }
+      }
+      if (att.length) {
+        emit({ type: 'info', text: `📎 reading ${att.length} attachment${att.length > 1 ? 's' : ''}…` });
+        const prep = await attach.prepare({ items: att, config, model, signal: run.ac.signal, emit });
+        content = (content ? content + '\n\n' : '') + prep.blocks;
+        attachments = prep.attachments;
+        if (display === undefined) display = text;     // the chat shows what was typed + chips, not the extracted file text
+      }
+      session.turn = (session.turn || 0) + 1;
+      session.revert = null; // a new message discards any pending redo
+      session.messages.push({ role: 'user', content, turn: session.turn, ...(wake ? { notice: true } : {}), ...(display !== undefined ? { display } : {}), ...(attachments ? { attachments } : {}) });
+      await sessions.save(session);
+      run.base = session.messages.slice();     // shallow copy is enough (and instant): messages are replaced, not mutated, for the replay
+      emit({ type: 'start', sessionId: session.id, title: session.title, agent: agent.name, model, workDir: cfg.getWorkDir() });
+      session.snaps = session.snaps || {};
+      const snapOn = config.snapshots !== false;
+      const snapOpts = { timeoutSec: Number(config.snapshotTimeoutSec) || 25 };
+      const startSnap = snapOn ? await snapshot.track(snapOpts) : null;
+      if (startSnap) session.snaps[session.turn] = startSnap;
+      else if (snapOn && snapshot.status() && !session.snapNoteShown) { session.snapNoteShown = true; emit({ type: 'info', text: `ℹ ${snapshot.status()}` }); }
+      const result = await runAgent({ session, root: session, agent, model, config, emit, signal: run.ac.signal, askPermission, askUser });
+      if (startSnap) {
+        const files = await snapshot.diff(startSnap, await snapshot.track(snapOpts));
+        if (files.length) emit({ type: 'changes', files });
+      }
+      if (session.autoTitle) {
+        const t = await generateTitle({ session, model, config, signal: run.ac.signal });
+        if (t) { session.title = t; emit({ type: 'title', title: t }); }
+        session.autoTitle = false;
+      }
+      emit({ type: 'done', iterations: result.iterations, truncated: !!result.truncated, usage: session.usage || null });
+    } catch (err) {
+      if (run.ac.signal.aborted) { session.interrupted = true; emit({ type: 'aborted' }); }
+      else emit({ type: 'error', message: String(err && err.message ? err.message : err) });
+    } finally {
+      clearInterval(heartbeat);
+      for (const id of myPermissions) pendingPermissions.delete(id);
+      for (const id of myQuestions) pendingQuestions.delete(id);
+      try { await sessions.save(session); } catch (e) { log.error('server', `could not save session ${session.id} at the end of the run`, e); emit({ type: 'warning', message: `Could not save the session: ${e.message}` }); }
+      running.delete(session.id);
+      for (const r of run.subs) if (!r.writableEnded) r.end();
+      waker.onRunEnd(session.id);   // a background process may have finished while this run was busy
+    }
+  })();
+}
+
+/* ---------- wake-up when a background process finishes ---------- */
+
+/** Start a turn on `sessionId` whose first message is the studio's notification (see lib/wake.js). false = busy, try later. */
+async function startWakeRun(sessionId, notice) {
+  if (running.has(sessionId)) return false;
+  const config = cfg.loadConfig();
+  const session = await sessions.get(sessionId);
+  if (running.has(sessionId)) return false;           // a user message won the race while the session was loading
+  const model = session.model || config.model;
+  if (!model) throw new Error('no model selected');
+  const agent = agents.getAgent(session.agent) || agents.getAgent('build');
+  if (!agent || agent.mode === 'subagent') throw new Error('no primary agent for this session');
+  launchRun({ session, config, agent, model, text: notice.text, att: [], res: null, wake: true, wakeDisplay: notice.display });
+  return true;
+}
+
+const waker = createWaker({
+  events: procs.events,
+  isRunning: (id) => running.has(id),
+  isSeen: (id) => procs.isSeen(id),
+  enabled: () => cfg.loadConfig().wakeOnProcessExit !== false,
+  start: startWakeRun,
+});
+
+function authPort() {
+  try { const a = server.address(); if (a && a.port) return a.port; } catch { /* not listening */ }
+  return args.port || Number(process.env.PORT) || 4312;
+}
+
+async function handleAuth(req, res, url) {
+  const auth = require('./lib/auth-routes');
+  return auth.handle(req, res, url, { port: authPort(), sendJson, readBody, log, parseCookies });
+}
+
+async function handleAuthApi(req, res, url) {
+  const auth = require('./lib/auth-routes');
+  return auth.handleApi(req, res, url, { port: authPort(), sendJson, readBody, log });
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/')) {
       if (!requestAllowed(req.headers)) {
         log.warn('server', `rejected cross-origin ${req.method} ${url.pathname} (host=${req.headers.host || '-'} origin=${req.headers.origin || '-'})`);
-        return json(res, 403, { error: 'forbidden: request did not originate from the local app' });
+        return sendJson(res, 403, { error: 'forbidden: request did not originate from the local app' });
       }
-      await handleApi(req, res, url);
-      return;
+      if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     }
-    if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'method not allowed' });
-    // static
-    if (url.pathname === '/' || url.pathname === '/index.html') {
-      if (serveAsset(res, 'index.html', MIME['.html'])) return;
-      return json(res, 500, { error: 'index.html missing' });
-    }
-    const base = path.basename(url.pathname);
-    if (['app.js', 'markdown.js'].includes(base) && serveAsset(res, base, MIME['.js'])) return;
-    if (base === 'style.css' && serveAsset(res, base, MIME['.css'])) return;
-    if (base === 'favicon.svg' && serveAsset(res, base, MIME['.svg'])) return;
-    json(res, 404, { error: 'not found' });
-  } catch (e) {
-    log.error('server', `${req.method} ${url.pathname} failed`, e);
-    if (!res.headersSent) json(res, statusFor(e), { error: e.message });
-    else try { res.end(); } catch { /* ignore */ }
+    if (url.pathname === '/api/chat' && req.method === 'POST') return await handleChat(req, res);
+    const att = url.pathname.match(/^\/api\/sessions\/(ses_[a-z0-9]+)\/attach$/);
+    if (att && req.method === 'GET') return await handleAttach(res, att[1]);
+    if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+    return serveStatic(req, res, url.pathname);
+  } catch (err) {
+    const status = statusFor(err);
+    if (status >= 500) log.error('http', `${req.method} ${url.pathname} failed`, err); else log.debug('http', `${req.method} ${url.pathname} -> ${status}`, err);
+    try {
+      if (!res.headersSent) sendJson(res, status, { error: explain(err) });
+      else if (!res.writableEnded) res.end();
+    } catch (e) { log.debug('http', 'could not send the error response', e); }
   }
 });
+server.on('clientError', (err, socket) => { try { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); else socket.destroy(); } catch { /* socket already gone */ } });
 
-// ---- CLI ----
-function parseArgs(argv) {
-  const out = { port: PORT, host: HOST, dir: null, open: true };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--port' || a === '-p') out.port = Number(argv[++i]);
-    else if (a === '--host') out.host = argv[++i];
-    else if (a === '--dir' || a === '-d') out.dir = argv[++i];
-    else if (a === '--no-open') out.open = false;
-    else if (a === '--version' || a === '-v') { out.version = true; }
-    else if (a === '--help' || a === '-h') out.help = true;
-  }
-  return out;
-}
+/* ---------- boot: pick directory, resolve session to resume, listen (auto-bump port) ---------- */
 
-const HELP = `agent-forge-studio — agentic YouTube studio for Ollama & OpenAI-compatible APIs
+const startup = { sessionId: null, agent: args.agent || null };
 
-Usage: agent-forge-studio [options]
+if (require.main === module) (async () => {
+  let workDir;
+  try { workDir = cfg.setWorkDir(args.dir || process.cwd()); } catch (e) { console.error(`cannot open the directory: ${e.message}`); log.error('boot', 'setWorkDir failed', e); process.exit(1); }
+  pruneToolOutput();
+  if (args.session) startup.sessionId = args.session;
+  else if (args.cont) { try { startup.sessionId = (await sessions.latest())?.id || null; } catch (e) { log.warn('boot', 'could not find the latest session to continue', e); } }
 
-Options:
-  -d, --dir <path>     channel workspace directory (default: cwd)
-  -p, --port <n>       port (default ${PORT})
-      --host <h>       bind host (default ${HOST})
-      --no-open        do not open the browser
-  -v, --version        print version
-  -h, --help           this help
+  let port = args.port;
+  const tryListen = (attempt) => {
+    server.once('error', (e) => {
+      if (e.code === 'EADDRINUSE' && attempt < 20) { port++; tryListen(attempt + 1); }
+      else { console.error(`cannot start the server on ${args.host}:${port}: ${e.code === 'EADDRINUSE' ? 'no free port found' : e.message}`); log.error('server', 'listen failed', e); process.exit(1); }
+    });
+    server.listen(port, args.host, () => {
+      if (cfg.loadConfig().snapshots !== false) snapshot.warmUp().catch(log.swallow('boot', 'snapshot warm-up failed'));   // background: never delays a message
+      console.log(`ollama-forge-studio  dir: ${workDir}`);
+      console.log(`               url: http://${args.host}:${server.address().port}${startup.sessionId ? `   (resuming ${startup.sessionId})` : ''}`);
+    });
+  };
+  tryListen(0);
+})();
 
-Command line (no UI):
-  agent-forge-studio run "<task>"          one agent task
-  agent-forge-studio chat                  interactive agent session
-  agent-forge-studio research "<query>"    search + read the web
-  agent-forge-studio download <url> [path]
-  agent-forge-studio skills list|search|repo|install|remove
-  agent-forge-studio browser open|snapshot|navigate|download|close
-  Run "agent-forge-studio help" for the full CLI help.
-
-Environment:
-  YOUTUBE_STUDIO_HOME  studio data root (default ~/.ytstudio)
-  PORT, HOST           same as --port/--host
-  GITHUB_TOKEN         optional: higher GitHub API limits for skill discovery
-`;
-
-async function main() {
-  const argv = process.argv.slice(2);
-  const cli = require('./lib/cli');
-  if (cli.handles(argv)) {
-    try {
-      await cli.run(argv);
-      return;
-    } catch (e) {
-      console.error(e.message || e);
-      process.exitCode = 1;
-      return;
-    }
-  }
-  const args = parseArgs(argv);
-  if (args.help) { process.stdout.write(HELP); return; }
-  if (args.version) {
-    let ver = '1.0.0';
-    try { ver = JSON.parse(fs.readFileSync(path.join(cfgLib.APP_ROOT || '.', 'package.json'), 'utf8')).version || ver; } catch { /* SEA build */ }
-    process.stdout.write(ver + '\n');
-    return;
-  }
-  if (args.dir) cfgLib.setWorkDir(args.dir);
-  else cfgLib.setWorkDir(process.cwd());
-  tightenSecrets();
-
-  await new Promise((resolve, reject) => {
-    server.once('error', (e) => { log.error('server', 'listen failed', e); reject(e); });
-    server.listen(args.port, args.host, resolve);
-  });
-  const where = `http://${args.host}:${server.address().port}`;
-  log.info('server', `listening on ${where} (workspace: ${cfgLib.getWorkDir()})`);
-  console.log(`agent-forge-studio  →  ${where}`);
-  console.log(`workspace             →  ${cfgLib.getWorkDir()}`);
-  if (args.open) {
-    const cmd = process.platform === 'darwin' ? `open ${where}` : process.platform === 'win32' ? `start ${where}` : `xdg-open ${where} 2>/dev/null || true`;
-    exec(cmd, () => {});
-  }
-}
-
-if (require.main === module) {
-  main().catch((e) => { console.error(e.message); process.exit(1); });
-}
-
-
-function tightenSecrets() {
-  try {
-    const root = cfgLib.studioDir ? cfgLib.studioDir() : null;
-    if (!root) return;
-    ensureSecretDir(root);
-    const tightenTree = (dir) => {
-      ensureSecretDir(dir);
-      const stack = [dir];
-      while (stack.length) {
-        const cur = stack.pop();
-        let ents = [];
-        try { ents = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
-        for (const ent of ents) {
-          const full = path.join(cur, ent.name);
-          if (ent.isDirectory()) { ensureSecretDir(full); stack.push(full); continue; }
-          if (!ent.isFile()) continue;
-          let st;
-          try { st = fs.statSync(full); } catch { continue; }
-          if (!((st.mode & 0o777) & 0o077)) continue;
-          try {
-            fs.chmodSync(full, 0o600);
-            log.warn('server', `tightened permissions on ${full} to 0600`);
-          } catch (e) {
-            if (process.platform !== 'win32') log.warn('server', `failed to tighten permissions on ${full}`, e);
-          }
-        }
-      }
-    };
-    const projectJson = path.join(root, 'project.json');
-    try {
-      const st = fs.statSync(projectJson);
-      if ((st.mode & 0o777) & 0o077) {
-        fs.chmodSync(projectJson, 0o600);
-        log.warn('server', `tightened permissions on ${projectJson} to 0600`);
-      }
-    } catch { /* not present */ }
-    for (const name of ['config', 'browser']) {
-      const dir = path.join(root, name);
-      if (fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) tightenTree(dir);
-    }
-  } catch (e) {
-    if (process.platform !== 'win32') log.debug('server', 'secret tightening failed', e);
-  }
-}
-
-module.exports = { server, handleApi, requestAllowed, parseCookies, hostAllowed, originAllowed };
+module.exports = { server, handleApi, handleAuth, requestAllowed, parseCookies, hostAllowed, originAllowed };

@@ -5,7 +5,7 @@ process.env.YOUTUBE_STUDIO_HOME = '/tmp/ytstudio-test-extra';
 require('fs').mkdirSync('/tmp/ytws-extra', { recursive: true });
 require('../lib/config').setWorkDir('/tmp/ytws-extra');
 const tools = require('../lib/tools');
-const names = tools.TOOLS.map(t => t.name);
+const names = Object.keys(tools.TOOLS);
 assert.ok(names.includes('topic_discover'));
 assert.ok(names.includes('seo_generate'));
 assert.ok(names.includes('quality_score'));
