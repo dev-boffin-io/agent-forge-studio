@@ -4,3 +4,10 @@ workspace/*
 node_modules/
 *.log
 dist/
+*.mp4
+*.webm
+*.ogg
+*.mov
+*.avi
+*.mkv
+workers/
