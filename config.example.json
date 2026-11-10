@@ -73,5 +73,9 @@
     "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
     "clientSecret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
     "redirectUri": ""
+  },
+  "github": {
+    "token": "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN",
+    "apiBase": "https://api.github.com"
   }
 }

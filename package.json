@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "license": "MIT",
-  "description": "Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint: research, planning, content creation, scripts, editing, multi-platform management (YouTube, Instagram, Facebook, Google), browser automation, and GitHub skills hub.",
+  "description": "Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint: research, planning, content creation, scripts, editing, multi-platform management (YouTube, Instagram, Facebook, Google Gmail/Drive/Docs/Calendar/Photos, GitHub), browser automation, and GitHub skills hub.",
   "type": "commonjs",
   "main": "server.js",
   "engines": {

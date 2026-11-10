@@ -195,7 +195,7 @@ async function handleApi(req, res, url) {
   const seg = pathname.split('/').filter(Boolean); // ['api', ...]
 
   if (pathname.startsWith('/auth/')) return handleAuth(req, res, url);
-  if (/^\/api\/(youtube|instagram|facebook|google)\/(connect|status|credentials)$/.test(pathname)) return handleAuthApi(req, res, url);
+  if (/^\/api\/(youtube|instagram|facebook|google|github)\/(connect|status|credentials)$/.test(pathname)) return handleAuthApi(req, res, url);
 
   if (pathname === '/api/state' && method === 'GET') {
     return sendJson(res, 200, {

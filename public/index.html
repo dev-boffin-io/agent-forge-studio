@@ -182,7 +182,7 @@
 
     <div class="yt-creds">
       <h3>Google Agent Credentials</h3>
-      <p class="hint-line">Google OAuth credentials to manage Google services.</p>
+      <p class="hint-line">Google OAuth credentials for Gmail, Drive/Docs, Calendar, Photos and Business Profile. Reconnect after upgrading so the new scopes are granted.</p>
       <div class="row yt-creds-row">
         <input id="gClientId" type="text" placeholder="Client ID (…apps.googleusercontent.com)" spellcheck="false" autocomplete="off" />
         <input id="gClientSecret" type="password" placeholder="Client Secret" spellcheck="false" autocomplete="off" />
@@ -190,6 +190,16 @@
         <button id="connectGAgent" class="btn small primary" type="button" disabled>Connect</button>
       </div>
       <div id="gAuthStatus" class="hint-line yt-creds-status"></div>
+    </div>
+
+    <div class="yt-creds">
+      <h3>GitHub Agent Credentials</h3>
+      <p class="hint-line">Personal access token (classic or fine-grained) with repo/issues/pull-request access. You can also set GITHUB_TOKEN or GH_TOKEN in the environment.</p>
+      <div class="row yt-creds-row">
+        <input id="ghToken" type="password" placeholder="Personal access token" spellcheck="false" autocomplete="off" />
+        <button id="saveGhCreds" class="btn small" type="button">Save token</button>
+      </div>
+      <div id="ghAuthStatus" class="hint-line yt-creds-status"></div>
     </div>
 
     <div class="yt-creds">

@@ -1715,17 +1715,20 @@ function pfFillCredentials() {
   fill('ig', c.instagram);
   fill('fb', c.facebook);
   fill('g', c.google);
+  const ghToken = $('ghToken');
+  if (ghToken && c.github) ghToken.value = c.github.tokenMasked || '';
 }
 
 async function pfRefreshStatuses() {
   const statuses = [
     ['youtube', 'ytAuthStatus'], ['instagram', 'igAuthStatus'], ['facebook', 'fbAuthStatus'], ['google', 'gAuthStatus'],
+    ['github', 'ghAuthStatus'],
   ];
   await Promise.all(statuses.map(async ([id, elId]) => {
     try {
       const s = await api(`/api/${id}/status`);
       if (s.hasToken) {
-        const extra = s.username ? ` (@${s.username})` : s.email ? ` (${s.email})` : s.pages && s.pages.length ? ` (${s.pages.length} page${s.pages.length === 1 ? '' : 's'})` : '';
+        const extra = s.username ? ` (@${s.username})` : s.email ? ` (${s.email})` : s.accountName ? ` (${s.accountName})` : s.pages && s.pages.length ? ` (${s.pages.length} page${s.pages.length === 1 ? '' : 's'})` : '';
         pfStatus(elId, '✓ connected' + extra, 'ok');
       } else if (s.hasCredentials) pfStatus(elId, 'keys saved — press Connect', '');
       else pfStatus(elId, 'not configured', '');
@@ -1742,6 +1745,16 @@ async function pfSaveKeys(prefix, id) {
     pfStatus(id, '✓ keys saved — press Connect', 'ok');
     return true;
   } catch (e) { pfStatus(id, 'save failed: ' + e.message, 'bad'); return false; }
+}
+
+async function pfSaveGhToken() {
+  const token = $('ghToken').value.trim();
+  if (!token) { pfStatus('ghAuthStatus', 'a personal access token is required', 'bad'); return; }
+  try {
+    state.config = await api('/api/github/credentials', { method: 'POST', body: JSON.stringify({ token }) });
+    pfStatus('ghAuthStatus', '✓ token saved', 'ok');
+    pfFillCredentials();
+  } catch (e) { pfStatus('ghAuthStatus', 'save failed: ' + e.message, 'bad'); }
 }
 
 async function pfConnect(prefix, statusId, buttonId) {
@@ -1941,6 +1954,7 @@ function platformInit() {
   if ($('saveIgCreds')) $('saveIgCreds').addEventListener('click', () => pfSaveKeys('ig', 'igAuthStatus'));
   if ($('saveFbCreds')) $('saveFbCreds').addEventListener('click', () => pfSaveKeys('fb', 'fbAuthStatus'));
   if ($('saveGCreds')) $('saveGCreds').addEventListener('click', () => pfSaveKeys('g', 'gAuthStatus'));
+  if ($('saveGhCreds')) $('saveGhCreds').addEventListener('click', () => pfSaveGhToken());
   if ($('connectAgent')) $('connectAgent').addEventListener('click', () => pfConnect('yt', 'ytAuthStatus', 'connectAgent'));
   if ($('connectIgAgent')) $('connectIgAgent').addEventListener('click', () => pfConnect('ig', 'igAuthStatus', 'connectIgAgent'));
   if ($('connectFbAgent')) $('connectFbAgent').addEventListener('click', () => pfConnect('fb', 'fbAuthStatus', 'connectFbAgent'));

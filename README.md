@@ -1,6 +1,6 @@
 # agent-forge-studio
 
-Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint — research, planning, content creation, scripts, edit decision lists, retention reading, niche research, browser automation, and direct multi-platform operation across YouTube, Instagram, Facebook, and Google. Install GitHub skills on demand. One dependency: Playwright (only loaded when the browser tools are used).
+Autonomous Agent Assistant for any Ollama/OpenAI-compatible endpoint — research, planning, content creation, scripts, edit decision lists, retention reading, niche research, browser automation, and direct multi-platform operation across YouTube, Instagram, Facebook, Google (Gmail, Drive/Docs, Calendar, Photos, Business Profile), and GitHub. Install GitHub skills on demand. One dependency: Playwright (only loaded when the browser tools are used).
 
 ## Quick start
 1. Start Ollama (or any OpenAI-compatible server).
@@ -26,8 +26,10 @@ Key fields:
   put them here or click through the UI's YouTube setup; keep the real secret out of git.
 - `facebook` / `instagram` — the Meta app **client id + secret** used by Facebook Pages and
   Instagram Business/Creator publishing.
-- `google` — Google OAuth **client id + secret** for account identity and read-only Business
-  Profile access.
+- `google` — Google OAuth **client id + secret** for account identity, Business Profile, Gmail,
+  Drive/Docs, Calendar and Photos.
+- `github` — a GitHub **personal access token** (classic or fine-grained) plus optional `apiBase`
+  for GitHub Enterprise. `GITHUB_TOKEN` / `GH_TOKEN` in the environment also work.
 
 ## Facebook, Instagram and Google connections
 
@@ -53,10 +55,27 @@ Facebook Page. Request `instagram_basic`, `instagram_content_publish`, `pages_sh
 stores the Page token plus `igUserId`. Photo posts and Reels wait for Meta's media container to
 reach `FINISHED` before publishing (default timeout: 2 minutes).
 
-**Google** — enable the Google Identity and Business Profile APIs. Request `openid`, `email`,
-`profile`, and `https://www.googleapis.com/auth/business.manage`. Google is used for account
-identity and read-only Business Profile account/location listing. Offline access is requested at
-consent, so the access token refreshes automatically.
+**Google** — enable the Google Identity, Business Profile, Gmail, Google Drive, Google Docs,
+Google Calendar, Google Photos Library and Google Photos Picker APIs. The consent screen requests
+`openid`, `email`, `profile`, `business.manage`, `gmail.modify`, `gmail.send`, `drive`,
+`documents`, `calendar`, `photoslibrary.appendonly`, `photoslibrary.readonly.appcreateddata`,
+`photoslibrary.edit.appcreateddata`, and `photospicker.mediaitems.readonly`. Gmail can
+search/read/send mail and change labels; Drive can list/download/upload/delete files and folders;
+Docs can read/create/append/replace text; Calendar can list calendars/events and create/update/
+delete events. Offline access is requested at consent, so the access token refreshes automatically.
+Reconnect after upgrading an existing connection so the new scopes are granted.
+
+**Google Photos** — the Library API can upload new media and list/download/manage only media and
+albums created by this app. Google removed full-library browsing in April 2025. To use photos the
+app did not create, the Picker tools create a session and return a `pickerUri`; the user opens it,
+picks items, then `photos_picker_wait` / `photos_picker_list` / `photos_picker_download` retrieve
+the selection. Google Photos APIs require OAuth verification and do not support service accounts.
+
+**GitHub** — save a personal access token in **Providers & Platform credentials → GitHub** (or set
+`GITHUB_TOKEN` / `GH_TOKEN`). Classic tokens need the `repo` scope for private repositories and
+writes; fine-grained tokens need Contents, Issues, and Pull requests access. The agent can list
+repos, issues, pull requests, commits, branches and releases; read/write files; create issues,
+comments, PRs and releases. All GitHub mutations use the `publish` permission gate.
 
 Tokens are stored only under `~/.ytstudio/<channel>-<hash>/config/` with directory mode `0700`
 and file mode `0600`. OAuth `state` values are signed, expire after 10 minutes, and can only be
@@ -70,6 +89,8 @@ use Pages your logged-in account already administers.
 - Sessions, SSE streaming, permission gating, compaction.
 - One folder per channel: `~/.ytstudio/<channel>-<hash>/` for sessions/outputs, channel workspace for content (`scripts/`, `transcripts/`, `analytics/`, `packages/`, `plans/`).
 - Multi-platform operation: upload videos/posts (YouTube, Instagram, Facebook), manage visibility/settings, and read stats. YouTube, Facebook Pages, Instagram Business/Creator, and Google Business Profile use their APIs; browser automation remains available as a fallback.
+- Google productivity tools: Gmail (search/read/send/labels), Drive (search/download/upload/folders), Docs (read/create/append/replace), Calendar (list/create/update/delete events), and Photos (upload/list/download albums plus Picker sessions for existing library items).
+- GitHub tools: repos, issues, pull requests, commits, branches, releases, and file read/write with a personal access token.
 - Browser Automation Skill (`skills/yt-browser`): the agent drives a **visible** Chromium window on the real Studio UI — navigate, snapshot the page, click, type, upload files like a human, with the login persisted in `~/.ytstudio/<channel>/browser/youtube.auth.json`. Install browsers once with `npx playwright install chromium`.
 
 ## Notes
