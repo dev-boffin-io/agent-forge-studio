@@ -14,6 +14,8 @@ cp config.example.json config.json
 ```
 `config.json` is gitignored — it holds your endpoint, model and any API keys. Everything is
 optional: any key you leave out falls back to the built-in default in `lib/config.js`.
+Set `$YOUTUBE_STUDIO_CONFIG` (or the legacy `$OLLAMA_STUDIO_CONFIG`) to use a different config
+file; the tests use this to keep `config.json` out of the source tree.
 
 Key fields:
 - `endpoint` — your Ollama / OpenAI-compatible server (default `http://localhost:11434`).
@@ -71,6 +73,7 @@ use Pages your logged-in account already administers.
 - Browser Automation Skill (`skills/yt-browser`): the agent drives a **visible** Chromium window on the real Studio UI — navigate, snapshot the page, click, type, upload files like a human, with the login persisted in `~/.ytstudio/<channel>/browser/youtube.auth.json`. Install browsers once with `npx playwright install chromium`.
 
 ## Notes
+- **Unfinished-work nudge asks first.** If a turn ends while its own task list is still open (or the model says it will continue but makes no tool call), the agent asks **Continue?** with *Yes, continue* / *No, stop* / a custom instruction instead of silently forcing another step. Stale todos from earlier turns never trigger it. Set `"nudgePrompt": false` to restore automatic nudging.
 - Publishing happens only when you ask the agent to publish; the `publish` permission defaults to **ask** for the main agent and is denied for read-only subagents.
 - GitHub skills are always previewed at a pinned commit SHA first: the UI shows every file, the full `SKILL.md` and warning flags, and nothing is written until you press **Confirm install**. Installed GitHub skills are marked untrusted; their bundled scripts, publish actions and browser writes still require an explicit permission prompt. Use `skills install <source> --yes` for the CLI equivalent.
 - The Studio UI window is the fallback for what the Data API cannot do (channel customization, end screens, cards, some upload dialogs). The human watches it work.
