@@ -22,6 +22,7 @@ Key fields:
 - `model` — default model ref; `smallModel` is an optional cheaper model for titles + summaries.
 - `providers` — extra backends, e.g. `{ "openai": { "type": "openai", "apiKeyEnv": "OPENAI_API_KEY" } }` (`type` is `ollama` | `openai` | `anthropic`).
 - `permission` — `allow` | `ask` | `deny` per rule (`bash` accepts a pattern map; last match wins).
+- `terminal` — set `false` to hide/disable the user terminal (default `true`).
 - `youtube` — your Google OAuth **client id + secret** for the channel tools. You can either
   put them here or click through the UI's YouTube setup; keep the real secret out of git.
 - `facebook` / `instagram` — the Meta app **client id + secret** used by Facebook Pages and
@@ -92,6 +93,7 @@ use Pages your logged-in account already administers.
 - Google productivity tools: Gmail (search/read/send/labels), Drive (search/download/upload/folders), Docs (read/create/append/replace), Calendar (list/create/update/delete events), and Photos (upload/list/download albums plus Picker sessions for existing library items).
 - GitHub tools: repos, issues, pull requests, commits, branches, releases, and file read/write with a personal access token.
 - Browser Automation Skill (`skills/yt-browser`): the agent drives a **visible** Chromium window on the real Studio UI — navigate, snapshot the page, click, type, upload files like a human, with the login persisted in `~/.ytstudio/<channel>/browser/youtube.auth.json`. Install browsers once with `npx playwright install chromium`.
+- **Terminal** panel (for you, not the model): the **Terminal** button opens a console where you run shell commands directly in the working directory. Output streams live over SSE (`stdout`/`stderr` coloured separately), **Stop** kills the whole process group, command history is kept locally (↑/↓), and a reload re-attaches to a command that is still running. Each Run is a fresh shell with stdin closed (no interactive prompts); the server owns the process. Set `"terminal": false` to hide/disable it.
 
 ## Notes
 - **Unfinished-work nudge asks first.** If a turn ends while its own task list is still open (or the model says it will continue but makes no tool call), the agent asks **Continue?** with *Yes, continue* / *No, stop* / a custom instruction instead of silently forcing another step. Stale todos from earlier turns never trigger it. Set `"nudgePrompt": false` to restore automatic nudging.
