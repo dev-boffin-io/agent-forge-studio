@@ -67,3 +67,26 @@ test('loadConfig: defaults, global and local layers', () => {
   assert.equal(after.model, global.model !== undefined ? global.model : cfg.DEFAULT_CONFIG.model);
   assert.deepEqual(after.providers, {});
 });
+
+test('saveConfig: stock provider keys are trimmed, masked, preserved and cleared', () => {
+  const llm = require('../lib/llm');
+  cfg.saveConfig({ pexelsApiKey: '  pexels-secret-5678  ', pixabayApiKey: 'pixabay-secret-9012' });
+  let c = cfg.loadConfig();
+  assert.equal(c.pexelsApiKey, 'pexels-secret-5678');
+  assert.equal(c.pixabayApiKey, 'pixabay-secret-9012');
+
+  const masked = llm.maskConfig(c);
+  assert.equal(masked.pexelsApiKey, '••••5678');
+  assert.equal(masked.pixabayApiKey, '••••9012');
+
+  // the settings dialog sends the mask back when the field was not edited: keep the stored key
+  cfg.saveConfig({ pexelsApiKey: masked.pexelsApiKey, pixabayApiKey: masked.pixabayApiKey });
+  c = cfg.loadConfig();
+  assert.equal(c.pexelsApiKey, 'pexels-secret-5678');
+  assert.equal(c.pixabayApiKey, 'pixabay-secret-9012');
+
+  cfg.saveConfig({ pexelsApiKey: '', pixabayApiKey: '' });
+  const raw = JSON.parse(fs.readFileSync(cfg.CONFIG_PATH, 'utf8'));
+  assert.equal(raw.pexelsApiKey, undefined);
+  assert.equal(raw.pixabayApiKey, undefined);
+});

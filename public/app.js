@@ -108,6 +108,11 @@ function openSettings() {
   $('sRequestTimeoutMs').value = c.requestTimeoutMs == null ? '' : c.requestTimeoutMs;
   $('sSystemPrompt').value = c.systemPrompt || '';
   $('sWake').value = String(c.wakeOnProcessExit !== false);
+  $('sTerminal').value = String(c.terminal !== false);
+  $('sVideoAspect').value = c.videoAspect || '16:9';
+  $('sVideoResolution').value = c.videoResolution == null ? '' : c.videoResolution;
+  $('sPexelsApiKey').value = c.pexelsApiKey || '';
+  $('sPixabayApiKey').value = c.pixabayApiKey || '';
   if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
 }
 
@@ -123,6 +128,9 @@ async function resetSettings() {
     $('sRequestTimeoutMs').value = def.requestTimeoutMs == null ? '' : def.requestTimeoutMs;
     $('sSystemPrompt').value = def.systemPrompt || '';
     $('sWake').value = String(def.wakeOnProcessExit !== false);
+    $('sTerminal').value = String(def.terminal !== false);
+    $('sVideoAspect').value = def.videoAspect || '16:9';
+    $('sVideoResolution').value = def.videoResolution == null ? '' : def.videoResolution;
     const patch = {
       wakeOnProcessExit: def.wakeOnProcessExit,
       thinking: def.thinking,
@@ -131,9 +139,13 @@ async function resetSettings() {
       maxIterations: def.maxIterations,
       requestTimeoutMs: def.requestTimeoutMs,
       systemPrompt: def.systemPrompt,
+      terminal: def.terminal !== false,
+      videoAspect: def.videoAspect,
+      videoResolution: def.videoResolution,
     };
     state.config = await api('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
     state.model = state.config.model;
+    applyTerminalEnabled(state.config.terminal !== false);
     if (dlg && dlg.open) dlg.close();
     setStatus('reset to defaults', 'ok');
   } catch (e) { setStatus(e.message, 'err'); }
@@ -148,9 +160,15 @@ async function saveSettings() {
     requestTimeoutMs: $('sRequestTimeoutMs').value === '' ? undefined : Number($('sRequestTimeoutMs').value),
     systemPrompt: $('sSystemPrompt').value,
     wakeOnProcessExit: $('sWake').value === 'true',
+    terminal: $('sTerminal').value === 'true',
+    videoAspect: $('sVideoAspect').value || '16:9',
+    videoResolution: $('sVideoResolution').value === '' ? undefined : Number($('sVideoResolution').value),
+    pexelsApiKey: $('sPexelsApiKey').value.trim(),
+    pixabayApiKey: $('sPixabayApiKey').value.trim(),
   };
   state.config = await api('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
   state.model = state.config.model;
+  applyTerminalEnabled(state.config.terminal !== false);
   $('settingsDlg').close();
   setStatus('saved', 'ok');
 }
@@ -1546,6 +1564,18 @@ function termClose() {
   try { localStorage.setItem(TERM_OPEN_KEY, '0'); } catch { /* storage blocked */ }
 }
 
+/** Show/hide every terminal entry point (top bar + chat header) and shut the panel when disabled. */
+function applyTerminalEnabled(enabled) {
+  state.terminal.enabled = enabled !== false;
+  for (const el of document.querySelectorAll('.terminal-toggle')) el.hidden = !state.terminal.enabled;
+  if (!state.terminal.enabled) { termClose(); termDisconnect(); }
+}
+
+function toggleTerminal() {
+  if (state.terminal.enabled === false) return;
+  if ($('terminalPanel').hidden) termOpen(); else termClose();
+}
+
 function termSetRunning(running) {
   state.terminal.running = running;
   $('terminalStop').disabled = !running;
@@ -1611,7 +1641,11 @@ function termRemember(command) {
   termHistIdx = -1;
 }
 
-$('terminalBtn').addEventListener('click', () => { if (state.terminal.enabled === false) return; if ($('terminalPanel').hidden) termOpen(); else termClose(); });
+$('terminalBtn').addEventListener('click', toggleTerminal);
+if ($('terminalTopBtn')) $('terminalTopBtn').addEventListener('click', toggleTerminal);
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === '`') { e.preventDefault(); toggleTerminal(); }
+});
 $('terminalClose').addEventListener('click', termClose);
 $('terminalClear').addEventListener('click', termClear);
 $('terminalStop').addEventListener('click', termStop);
@@ -1635,6 +1669,7 @@ termInput.addEventListener('keydown', (e) => {
 
 /** After a reload, re-attach to a terminal that is still running (the server keeps the process alive). */
 async function termRestore() {
+  if (state.terminal.enabled === false) return;
   let open = false;
   try { open = localStorage.getItem(TERM_OPEN_KEY) === '1'; } catch { /* storage blocked */ }
   try {
@@ -1646,7 +1681,6 @@ async function termRestore() {
   } catch { /* offline: the button still works once the server is back */ }
   if (open) termOpen(false);
 }
-termRestore();
 
 /** Startup failures must be visible (and retryable), never a silently blank page. */
 function showFatal(title, err, retry) {
@@ -1668,9 +1702,8 @@ async function init() {
   try {
     const [, st] = await Promise.all([loadConfig(), api('/api/state')]);
     state.workDir = st.workDir;
-    state.terminal.enabled = st.terminal !== false;
-    $('terminalBtn').hidden = !state.terminal.enabled;
-    if (!state.terminal.enabled) { termClose(); termDisconnect(); }
+    applyTerminalEnabled(st.terminal !== false);
+    termRestore();
     showWorkDir();
     state.commands = st.commands || [];
     fillAgents(st.agents, st.startup.agent || state.config.agent);

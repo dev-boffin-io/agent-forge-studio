@@ -42,7 +42,12 @@ test('server boots, serves the UI and answers the HTTP API', async (t) => {
 
   const page = await fetch(base + '/');
   assert.equal(page.status, 200);
-  assert.ok((await page.text()).includes('<html'));
+  const html = await page.text();
+  assert.ok(html.includes('<html'));
+  assert.match(html, /id="terminalTopBtn"/);
+  assert.match(html, /id="sTerminal"/);
+  assert.match(html, /id="sPexelsApiKey"/);
+  assert.match(html, /id="sPixabayApiKey"/);
 
   const config = await (await fetch(base + '/api/config')).json();
   assert.ok(config.endpoint);

@@ -22,7 +22,8 @@ Key fields:
 - `model` — default model ref; `smallModel` is an optional cheaper model for titles + summaries.
 - `providers` — extra backends, e.g. `{ "openai": { "type": "openai", "apiKeyEnv": "OPENAI_API_KEY" } }` (`type` is `ollama` | `openai` | `anthropic`).
 - `permission` — `allow` | `ask` | `deny` per rule (`bash` accepts a pattern map; last match wins).
-- `terminal` — set `false` to hide/disable the user terminal (default `true`).
+- `terminal` — set `false` to hide/disable the user terminal (default `true`). Toggle it in **Settings → Show terminal panel**.
+- `pexelsApiKey` / `pixabayApiKey` — stock-footage provider keys. Paste them in **Settings → Video & stock footage**; `PEXELS_API_KEY` / `PIXABAY_API_KEY` in the environment also work.
 - `youtube` — your Google OAuth **client id + secret** for the channel tools. You can either
   put them here or click through the UI's YouTube setup; keep the real secret out of git.
 - `facebook` / `instagram` — the Meta app **client id + secret** used by Facebook Pages and
@@ -93,7 +94,7 @@ use Pages your logged-in account already administers.
 - Google productivity tools: Gmail (search/read/send/labels), Drive (search/download/upload/folders), Docs (read/create/append/replace), Calendar (list/create/update/delete events), and Photos (upload/list/download albums plus Picker sessions for existing library items).
 - GitHub tools: repos, issues, pull requests, commits, branches, releases, and file read/write with a personal access token.
 - Browser Automation Skill (`skills/yt-browser`): the agent drives a **visible** Chromium window on the real Studio UI — navigate, snapshot the page, click, type, upload files like a human, with the login persisted in `~/.ytstudio/<channel>/browser/youtube.auth.json`. Install browsers once with `npx playwright install chromium`.
-- **Terminal** panel (for you, not the model): the **Terminal** button opens a console where you run shell commands directly in the working directory. Output streams live over SSE (`stdout`/`stderr` coloured separately), **Stop** kills the whole process group, command history is kept locally (↑/↓), and a reload re-attaches to a command that is still running. Each Run is a fresh shell with stdin closed (no interactive prompts); the server owns the process. Set `"terminal": false` to hide/disable it.
+- **Terminal** panel (for you, not the model): the **Terminal** button in the top bar or the chat header (also `Ctrl+\``) opens a console where you run shell commands directly in the working directory. Output streams live over SSE (`stdout`/`stderr` coloured separately), **Stop** kills the whole process group, command history is kept locally (↑/↓), and a reload re-attaches to a command that is still running. Each Run is a fresh shell with stdin closed (no interactive prompts); the server owns the process. Set `"terminal": false` or **Settings → Show terminal panel → false** to hide/disable it.
 
 ## Notes
 - **Unfinished-work nudge asks first.** If a turn ends while its own task list is still open (or the model says it will continue but makes no tool call), the agent asks **Continue?** with *Yes, continue* / *No, stop* / a custom instruction instead of silently forcing another step. Stale todos from earlier turns never trigger it. Set `"nudgePrompt": false` to restore automatic nudging.
@@ -126,8 +127,9 @@ cd workers/render && pip install -r requirements.txt && uvicorn main:app --host 
 - **Aspect ratio** — `"videoAspect"`: `16:9` (default), `9:16` (Shorts/Reels), `1:1`, `4:5`.
   Clips are scaled to cover the frame and centre-cropped, never stretched. `"videoResolution"` is
   the shorter edge in px (use 720 on a phone).
-- **Stock footage** — only short clips are downloaded (`stockFootage.maxClipSeconds`, default 30 s;
-  `maxClipMB`, default 60), in the orientation of `videoAspect`. Non-English ideas are translated
-  into English search phrases first. The render worker trims/cycles clips to the voiceover length.
+- **Stock footage** — add a Pexels and/or Pixabay key in **Settings → Video & stock footage**.
+  Only short clips are downloaded (`stockFootage.maxClipSeconds`, default 30 s; `maxClipMB`,
+  default 60), in the orientation of `videoAspect`. Non-English ideas are translated into English
+  search phrases first. The render worker trims/cycles clips to the voiceover length.
 - Worker tests: `cd workers/render && python -m unittest test_core`,
   `cd workers/tts && python -m unittest test_langvoice`.

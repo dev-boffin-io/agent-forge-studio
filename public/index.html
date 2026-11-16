@@ -28,6 +28,7 @@
       <button id="refreshModels" class="btn ghost" title="Reload models from all providers">↻</button>
       <button id="statusBtn" class="btn ghost" title="MCP servers, LSP, skills">Tools</button>
       <button id="platformsBtn" class="btn ghost" title="YouTube, Instagram, Facebook, Google credentials and browser automation">Platforms</button>
+      <button id="terminalTopBtn" class="btn ghost terminal-toggle" title="Open the terminal (Ctrl+`)" hidden>Terminal</button>
       <button id="saveConfig" class="btn primary">Save</button>
       <button id="quitBtn" class="btn ghost danger" title="Stop the studio server">Quit</button>
     </div>
@@ -67,7 +68,7 @@
           <select id="agent" title="Switch agent (build = full access, plan = read-only)"></select>
         </div>
         <div class="row">
-          <button id="terminalBtn" class="btn small ghost" title="Open the terminal (run commands in the working directory)">Terminal</button>
+          <button id="terminalBtn" class="btn small ghost terminal-toggle" title="Open the terminal (Ctrl+`, runs commands in the working directory)">Terminal</button>
           <button id="undoBtn" class="btn small ghost" title="Undo the last turn (restores files the agent changed)">Undo</button>
           <button id="redoBtn" class="btn small ghost" title="Redo">Redo</button>
           <button id="forkSession" class="btn small ghost" title="Branch this session">Fork</button>
@@ -245,6 +246,20 @@
       <label><span>maxIterations</span><input id="sMaxIterations" type="number" min="1" step="1" /></label>
       <label><span>requestTimeoutMs</span><input id="sRequestTimeoutMs" type="number" min="1000" step="1000" /></label>
       <label><span>Wake agent when a background job ends</span><select id="sWake"><option value="true">true</option><option value="false">false</option></select></label>
+      <label><span>Show terminal panel</span><select id="sTerminal"><option value="true">true</option><option value="false">false</option></select></label>
+    </div>
+    <h4>Video &amp; stock footage</h4>
+    <p class="hint-line">Auto-Forge tries Pexels first, then Pixabay for b-roll. Paste a free API key below, or set <code>PEXELS_API_KEY</code> / <code>PIXABAY_API_KEY</code> in the environment. Keys: <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">Pexels</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener">Pixabay</a>.</p>
+    <div class="settings-grid">
+      <label><span>Video aspect</span><select id="sVideoAspect">
+        <option value="16:9">16:9 — YouTube</option>
+        <option value="9:16">9:16 — Shorts / Reels</option>
+        <option value="1:1">1:1 — square</option>
+        <option value="4:5">4:5 — portrait feed</option>
+      </select></label>
+      <label><span>Resolution (short edge)</span><input id="sVideoResolution" type="number" min="240" max="2160" step="120" placeholder="1080" /></label>
+      <label><span>Pexels API key</span><input id="sPexelsApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Paste your Pexels API key" /></label>
+      <label><span>Pixabay API key</span><input id="sPixabayApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Paste your Pixabay API key" /></label>
     </div>
     <label class="settings-block"><span>systemPrompt</span><textarea id="sSystemPrompt" rows="6" spellcheck="false"></textarea></label>
     <div class="row dlg-actions">

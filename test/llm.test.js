@@ -44,9 +44,13 @@ test('resolve: provider/model refs and bare names', () => {
 test('maskConfig: api keys are masked, never removed from the copy structure', () => {
   const masked = llm.maskConfig({
     apiKey: 'sk-supersecret1234',
+    pexelsApiKey: 'pexels-secret-5678',
+    pixabayApiKey: 'pixabay-secret-9012',
     providers: { oa: { type: 'openai', endpoint: 'x', apiKey: 'abcd1234efgh' }, plain: { type: 'ollama', endpoint: 'y' } },
   });
   assert.equal(masked.apiKey, '••••1234');
+  assert.equal(masked.pexelsApiKey, '••••5678');
+  assert.equal(masked.pixabayApiKey, '••••9012');
   assert.equal(masked.providers.oa.apiKey, '••••efgh');
   assert.equal(masked.providers.plain.apiKey, undefined);
   assert.equal(masked.providers.oa.type, 'openai');
