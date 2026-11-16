@@ -68,6 +68,19 @@ test('loadConfig: defaults, global and local layers', () => {
   assert.deepEqual(after.providers, {});
 });
 
+
+test('loadConfig: music and stock defaults merge with partial overrides', () => {
+  fs.writeFileSync(path.join(ctx.studioDir, 'config.json'), JSON.stringify({ music: { volume: 0.2 }, stockFootage: { maxClipSeconds: 12 } }), 'utf8');
+  const merged = cfg.loadConfig();
+  assert.equal(merged.music.volume, 0.2);
+  assert.equal(merged.music.dir, 'music');
+  assert.equal(merged.music.duck, true);
+  assert.equal(merged.stockFootage.maxClipSeconds, 12);
+  assert.equal(merged.stockFootage.maxClipMB, 60);
+  assert.equal(merged.voiceRate, '-4%');
+  fs.rmSync(path.join(ctx.studioDir, 'config.json'));
+});
+
 test('saveConfig: stock provider keys are trimmed, masked, preserved and cleared', () => {
   const llm = require('../lib/llm');
   cfg.saveConfig({ pexelsApiKey: '  pexels-secret-5678  ', pixabayApiKey: 'pixabay-secret-9012' });

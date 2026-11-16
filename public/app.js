@@ -113,6 +113,15 @@ function openSettings() {
   $('sVideoResolution').value = c.videoResolution == null ? '' : c.videoResolution;
   $('sPexelsApiKey').value = c.pexelsApiKey || '';
   $('sPixabayApiKey').value = c.pixabayApiKey || '';
+  $('sVoiceRate').value = c.voiceRate || '';
+  $('sVoicePitch').value = c.voicePitch || '';
+  $('sVoiceVolume').value = c.voiceVolume || '';
+  const music = c.music || {};
+  $('sMusicEnabled').value = String(music.enabled !== false);
+  $('sMusicDir').value = music.dir || 'music';
+  $('sMusicVolume').value = music.volume == null ? '' : music.volume;
+  $('sMusicDuck').value = String(music.duck !== false);
+  $('sMusicFade').value = music.fadeSeconds == null ? '' : music.fadeSeconds;
   if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
 }
 
@@ -131,6 +140,15 @@ async function resetSettings() {
     $('sTerminal').value = String(def.terminal !== false);
     $('sVideoAspect').value = def.videoAspect || '16:9';
     $('sVideoResolution').value = def.videoResolution == null ? '' : def.videoResolution;
+    $('sVoiceRate').value = def.voiceRate || '';
+    $('sVoicePitch').value = def.voicePitch || '';
+    $('sVoiceVolume').value = def.voiceVolume || '';
+    const music = def.music || {};
+    $('sMusicEnabled').value = String(music.enabled !== false);
+    $('sMusicDir').value = music.dir || 'music';
+    $('sMusicVolume').value = music.volume == null ? '' : music.volume;
+    $('sMusicDuck').value = String(music.duck !== false);
+    $('sMusicFade').value = music.fadeSeconds == null ? '' : music.fadeSeconds;
     const patch = {
       wakeOnProcessExit: def.wakeOnProcessExit,
       thinking: def.thinking,
@@ -142,6 +160,10 @@ async function resetSettings() {
       terminal: def.terminal !== false,
       videoAspect: def.videoAspect,
       videoResolution: def.videoResolution,
+      voiceRate: def.voiceRate,
+      voicePitch: def.voicePitch,
+      voiceVolume: def.voiceVolume,
+      music: def.music,
     };
     state.config = await api('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
     state.model = state.config.model;
@@ -165,6 +187,16 @@ async function saveSettings() {
     videoResolution: $('sVideoResolution').value === '' ? undefined : Number($('sVideoResolution').value),
     pexelsApiKey: $('sPexelsApiKey').value.trim(),
     pixabayApiKey: $('sPixabayApiKey').value.trim(),
+    voiceRate: $('sVoiceRate').value.trim() || undefined,
+    voicePitch: $('sVoicePitch').value.trim() || undefined,
+    voiceVolume: $('sVoiceVolume').value.trim() || undefined,
+    music: {
+      enabled: $('sMusicEnabled').value !== 'false',
+      dir: $('sMusicDir').value.trim() || 'music',
+      volume: $('sMusicVolume').value === '' ? 0.12 : Number($('sMusicVolume').value),
+      duck: $('sMusicDuck').value !== 'false',
+      fadeSeconds: $('sMusicFade').value === '' ? 2 : Number($('sMusicFade').value),
+    },
   };
   state.config = await api('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
   state.model = state.config.model;

@@ -256,7 +256,8 @@ test('stock: with no keys, Wikimedia Commons is used and returns real clips', as
     assert.equal(r.count, 1);
     assert.ok(r.shots.every((s) => fs.existsSync(path.join(dirT, s.file))));
     assert.ok(r.shots.every((s) => s.provider === 'wikimedia'));
-    assert.ok(!hosts.includes('api.pexels.com') && !hosts.includes('pixabay.com'), 'keyed providers are skipped');
+    assert.ok(!hosts.includes('api.pexels.com'), 'keyed Pexels API is skipped');
+    assert.ok(hosts.includes('www.pexels.com') && hosts.includes('pixabay.com'), 'keyless web adapters ran first');
   });
 });
 
@@ -464,6 +465,24 @@ test('stock: several English queries are tried until enough clips are collected'
     assert.equal(r.count, 2);
     assert.equal(new Set(r.shots.map((s) => s.file)).size, 2, 'files do not overwrite each other');
     assert.equal(r.shots[1].start, r.shots[0].end, 'one continuous timeline');
+  });
+});
+
+test('stock: importStockFootage downloads a manual direct CDN URL without an API key', async () => {
+  const dirT = tmpDir();
+  await withMockFetch(async (url) => {
+    assert.match(String(url), /cdn\.pixabay\.com/);
+    return clipResponse(Buffer.from('MANUAL-CLIP'));
+  }, async () => {
+    const r = await stock.importStockFootage({
+      urls: ['https://cdn.pixabay.com/video/123-large.mp4'], topic: 'manual coffee', workDir: dirT, cfg: {},
+    });
+    assert.equal(r.stub, false);
+    assert.equal(r.provider, 'manual');
+    assert.equal(r.count, 1);
+    assert.equal(r.shots[0].provider, 'pixabay');
+    assert.equal(r.shots[0].license, 'Pixabay Content License');
+    assert.ok(fs.existsSync(path.join(dirT, r.shots[0].file)));
   });
 });
 

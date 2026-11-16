@@ -249,7 +249,7 @@
       <label><span>Show terminal panel</span><select id="sTerminal"><option value="true">true</option><option value="false">false</option></select></label>
     </div>
     <h4>Video &amp; stock footage</h4>
-    <p class="hint-line">Auto-Forge tries Pexels first, then Pixabay for b-roll. Paste a free API key below, or set <code>PEXELS_API_KEY</code> / <code>PIXABAY_API_KEY</code> in the environment. Keys: <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">Pexels</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener">Pixabay</a>.</p>
+    <p class="hint-line">Auto-Forge works without API keys: it tries keyed Pexels/Pixabay when configured, then public Pexels/Pixabay web search and Wikimedia Commons. You can also paste exact Pexels/Pixabay page or CDN links in chat. Keys are optional: <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">Pexels</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener">Pixabay</a>.</p>
     <div class="settings-grid">
       <label><span>Video aspect</span><select id="sVideoAspect">
         <option value="16:9">16:9 — YouTube</option>
@@ -258,8 +258,24 @@
         <option value="4:5">4:5 — portrait feed</option>
       </select></label>
       <label><span>Resolution (short edge)</span><input id="sVideoResolution" type="number" min="240" max="2160" step="120" placeholder="1080" /></label>
-      <label><span>Pexels API key</span><input id="sPexelsApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Paste your Pexels API key" /></label>
-      <label><span>Pixabay API key</span><input id="sPixabayApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Paste your Pixabay API key" /></label>
+      <label><span>Pexels API key (optional)</span><input id="sPexelsApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Optional — keyless web search works too" /></label>
+      <label><span>Pixabay API key (optional)</span><input id="sPixabayApiKey" type="password" spellcheck="false" autocomplete="off" placeholder="Optional — manual/CDN import works too" /></label>
+    </div>
+    <h4>Voiceover</h4>
+    <p class="hint-line">The TTS worker picks a native voice for each sentence and mixes multilingual narration automatically. These prosody values apply to Auto-Forge unless overridden.</p>
+    <div class="settings-grid">
+      <label><span>Voice rate</span><input id="sVoiceRate" type="text" placeholder="-4%" /></label>
+      <label><span>Voice pitch</span><input id="sVoicePitch" type="text" placeholder="+0Hz" /></label>
+      <label><span>Voice volume</span><input id="sVoiceVolume" type="text" placeholder="+0%" /></label>
+    </div>
+    <h4>Background music</h4>
+    <p class="hint-line">Drop royalty-free tracks into the music folder (workspace-relative). The renderer loops the track, ducks it under the voice and fades it out; original footage audio is always muted.</p>
+    <div class="settings-grid">
+      <label><span>Music enabled</span><select id="sMusicEnabled"><option value="true">true</option><option value="false">false</option></select></label>
+      <label><span>Music folder</span><input id="sMusicDir" type="text" placeholder="music" /></label>
+      <label><span>Music volume (0–1)</span><input id="sMusicVolume" type="number" min="0" max="1" step="0.01" placeholder="0.12" /></label>
+      <label><span>Duck under voice</span><select id="sMusicDuck"><option value="true">true</option><option value="false">false</option></select></label>
+      <label><span>Music fade (seconds)</span><input id="sMusicFade" type="number" min="0" max="30" step="0.5" placeholder="2" /></label>
     </div>
     <label class="settings-block"><span>systemPrompt</span><textarea id="sSystemPrompt" rows="6" spellcheck="false"></textarea></label>
     <div class="row dlg-actions">

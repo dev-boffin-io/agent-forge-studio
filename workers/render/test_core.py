@@ -4,7 +4,15 @@ from pathlib import Path
 
 import core
 
-HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+def _usable(binary):
+    if not shutil.which(binary):
+        return False
+    try:
+        return subprocess.run([binary, "-version"], capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+HAVE_FFMPEG = _usable("ffmpeg") and _usable("ffprobe")
 
 
 def ff(*args):
@@ -48,8 +56,27 @@ class PureTests(unittest.TestCase):
         self.assertLessEqual(cuts[0]["dur"], 12)
         self.assertLessEqual(cuts[1]["dur"], 3)
 
+    def test_scene_weights_drive_the_timeline(self):
+        clips = [{"file": "intro", "duration": 40, "want": 4},
+                 {"file": "body", "duration": 40, "want": 12}]
+        cuts = core.plan_segments(clips, 16.0, seg=6)
+        self.assertAlmostEqual(sum(c["dur"] for c in cuts), 16.0, places=3)
+        intro = sum(c["dur"] for c in cuts if c["file"] == "intro")
+        body = sum(c["dur"] for c in cuts if c["file"] == "body")
+        self.assertAlmostEqual(intro, 4.0, places=3)
+        self.assertAlmostEqual(body, 12.0, places=3)
 
-@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not installed")
+    def test_audio_filter_normalises_voice_and_ducks_music(self):
+        voice = core.build_audio_filter(20.0, music=False)
+        self.assertIn("loudnorm", voice)
+        self.assertNotIn("sidechaincompress", voice)
+        mixed = core.build_audio_filter(20.0, music=True, duck=True)
+        self.assertIn("sidechaincompress", mixed)
+        self.assertIn("volume=0.1200", mixed)
+        self.assertIn("afade=t=out:st=18.000", mixed)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg/ffprobe unavailable or unusable")
 class RenderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -90,6 +117,17 @@ class RenderTests(unittest.TestCase):
         p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                             "stream=codec_name", "-of", "json", str(out)], capture_output=True, text=True)
         self.assertEqual(json.loads(p.stdout)["streams"][0]["codec_name"], "aac")
+
+    def test_music_is_mixed_and_original_audio_is_muted(self):
+        music = self.tmp / "music.mp3"
+        ff("-f", "lavfi", "-i", "sine=frequency=220:duration=5", "-c:a", "libmp3lame", str(music))
+        out = self.tmp / "music-mix.mp4"
+        res = core.render([{"file": str(self.land), "start": 0, "end": 5}], str(self.audio), out,
+                          aspect="16:9", short_side=240, music=str(music), music_volume=0.1)
+        info = core.probe(out)
+        self.assertTrue(res["originalAudioMuted"])
+        self.assertEqual(res["music"], str(music))
+        self.assertAlmostEqual(info["duration"], 14.0, delta=0.6)
 
     def test_no_audio_each_clip_once(self):
         out = self.tmp / "noaudio.mp4"

@@ -83,6 +83,20 @@ test('platform tools are registered with the expected categories', () => {
   }
 });
 
+
+test('platform tools expose keyless footage, verification and music tools', () => {
+  for (const name of ['find_stock_footage', 'footage_import', 'footage_prepare', 'music_list', 'tts_synth', 'render_video']) {
+    assert.ok(tool(name), `missing tool ${name}`);
+  }
+  assert.equal(tool('footage_import').category, 'websearch');
+  assert.equal(tool('footage_prepare').category, 'bash');
+  assert.equal(tool('music_list').category, 'read');
+  assert.deepEqual(tool('footage_import').parameters.required, ['urls']);
+  assert.deepEqual(tool('footage_prepare').parameters.required, ['shots']);
+  assert.equal(tool('render_video').parameters.properties.music.type, 'string');
+  assert.equal(tool('tts_synth').parameters.properties.rate.type, 'string');
+});
+
 test('publish tools cannot bypass the consent gate', () => {
   assert.equal(P.decide({ publish: 'deny' }, 'publish', 'facebook_post_text').decision, 'deny');
   assert.equal(P.decide({ publish: 'allow' }, 'publish', 'instagram_publish_photo').decision, 'ask');

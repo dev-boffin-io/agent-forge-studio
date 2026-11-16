@@ -23,7 +23,9 @@ Key fields:
 - `providers` — extra backends, e.g. `{ "openai": { "type": "openai", "apiKeyEnv": "OPENAI_API_KEY" } }` (`type` is `ollama` | `openai` | `anthropic`).
 - `permission` — `allow` | `ask` | `deny` per rule (`bash` accepts a pattern map; last match wins).
 - `terminal` — set `false` to hide/disable the user terminal (default `true`). Toggle it in **Settings → Show terminal panel**.
-- `pexelsApiKey` / `pixabayApiKey` — stock-footage provider keys. Paste them in **Settings → Video & stock footage**; `PEXELS_API_KEY` / `PIXABAY_API_KEY` in the environment also work.
+- `pexelsApiKey` / `pixabayApiKey` — optional stock-footage API keys. Keyless public Pexels/Pixabay search and Wikimedia Commons work without them; paste keys in **Settings → Video & stock footage** or set `PEXELS_API_KEY` / `PIXABAY_API_KEY`.
+- `voiceRate` / `voicePitch` / `voiceVolume` — edge-tts prosody (defaults `-4%`, `+0Hz`, `+0%`).
+- `music` — local background music: `{ "enabled": true, "dir": "music", "volume": 0.12, "duck": true, "fadeSeconds": 2 }`.
 - `youtube` — your Google OAuth **client id + secret** for the channel tools. You can either
   put them here or click through the UI's YouTube setup; keep the real secret out of git.
 - `facebook` / `instagram` — the Meta app **client id + secret** used by Facebook Pages and
@@ -122,14 +124,23 @@ cd workers/render && pip install -r requirements.txt && uvicorn main:app --host 
 
 - **Voice / languages** — each sentence's language is detected from its script and spoken with a
   native edge-tts voice (Bengali, Hindi, Arabic, Japanese, … and mixed text). Only Latin-script
-  text needs a hint: `"voiceLang": "es"`. Force a single voice with `"ttsVoice"`, or override the
-  defaults with `YT_TTS_VOICES='{"bn":"bn-IN-TanishaaNeural"}'`.
+  text needs a hint: `"voiceLang": "es"`. Force a single voice with `"ttsVoice"`, tune pacing with
+  `"voiceRate"` / `"voicePitch"` / `"voiceVolume"` (default `-4%`, `+0Hz`, `+0%`), or override the
+  voices with `YT_TTS_VOICES='{"bn":"bn-IN-TanishaaNeural"}'`. `GET /voices` lists the defaults.
+- **Background music** — drop royalty-free audio files in `music/` (or `assets/music/`). The
+  renderer loops the track, fades it, and ducks it under the voice. Configure with `music` in
+  Settings; original footage audio is always muted.
 - **Aspect ratio** — `"videoAspect"`: `16:9` (default), `9:16` (Shorts/Reels), `1:1`, `4:5`.
   Clips are scaled to cover the frame and centre-cropped, never stretched. `"videoResolution"` is
   the shorter edge in px (use 720 on a phone).
-- **Stock footage** — add a Pexels and/or Pixabay key in **Settings → Video & stock footage**.
-  Only short clips are downloaded (`stockFootage.maxClipSeconds`, default 30 s; `maxClipMB`,
-  default 60), in the orientation of `videoAspect`. Non-English ideas are translated into English
-  search phrases first. The render worker trims/cycles clips to the voiceover length.
+- **Stock footage** — no API key required. Auto-Forge tries keyed Pexels → Pixabay, then keyless
+  public Pexels/Pixabay pages, then Wikimedia Commons. Only short clips are downloaded
+  (`stockFootage.maxClipSeconds`, default 30 s; `maxClipMB`, default 60), in the orientation of
+  `videoAspect`. Non-English ideas are translated into English search phrases first. Clips are
+  probed, source pages/licences are recorded, and original audio is stripped; scene timing follows
+  the narration. If a site blocks automated access, paste exact Pexels/Pixabay page or CDN URLs
+  into chat and the agent will use `footage_import` (no key, no account). `footage_prepare` can
+  re-verify local clips, `music_list` shows available tracks, and `tts_synth` works standalone for
+  “voice this text”.
 - Worker tests: `cd workers/render && python -m unittest test_core`,
-  `cd workers/tts && python -m unittest test_langvoice`.
+  `cd workers/tts && python -m unittest test_langvoice`. JS tests: `npm test`.

@@ -8,11 +8,13 @@ heavy audio stack lives in its own Python environment. Start it with:
 
 Endpoints:
     GET  /health   -> {"ok": true}
-    POST /synth    -> {"text", "lang"?: "bn", "voice"?: "...", "out"?: "<abs .mp3>"}
+    POST /synth    -> {"text", "lang"?: "bn", "voice"?: "...", "rate"?: "-4%",
+                       "pitch"?: "+0Hz", "volume"?: "+0%", "out"?: "<abs .mp3>"}
                       The language of every sentence is detected from its script and spoken with a
                       native voice (Bengali, Hindi, Arabic, Japanese, ... and mixed text). `lang` is only
                       needed to pick the language of Latin-script text (es, fr, de...). Returns
-                      {"audio": "<abs path>", "duration": <seconds>, "segments": [...], "stub": false}
+                      {"audio": "<abs path>", "duration": <seconds>, "segments": [...],
+                       "prosody": {...}, "stub": false}
 
 The output path defaults to <YT_TTS_OUT_DIR or a temp dir>/<sha1(text)>.mp3 so repeated
 requests for the same text are cached. Pass an explicit "out" to control the location.
@@ -40,7 +42,18 @@ class TTSReq(BaseModel):
     text: str
     voice: str | None = None  # optional; "auto"/omitted = pick a native voice per language
     lang: str | None = None   # optional hint for Latin-script text, e.g. "es"
+    rate: str | None = None   # edge-tts prosody, e.g. "-4%" (default YT_TTS_RATE or -4%)
+    pitch: str | None = None  # e.g. "+0Hz" (default YT_TTS_PITCH or +0Hz)
+    volume: str | None = None # e.g. "+0%" (default YT_TTS_VOLUME or +0%)
     out: str | None = None    # absolute path for the .mp3; omit to use the cache dir
+
+
+def _prosody(req: TTSReq) -> dict:
+    return {
+        "rate": req.rate or os.environ.get("YT_TTS_RATE", "-4%"),
+        "pitch": req.pitch or os.environ.get("YT_TTS_PITCH", "+0Hz"),
+        "volume": req.volume or os.environ.get("YT_TTS_VOLUME", "+0%"),
+    }
 
 
 def _out_dir() -> Path:
@@ -54,7 +67,8 @@ def _target_path(req: TTSReq) -> Path:
         p = Path(req.out)
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
-    key = f"{req.voice or 'auto'}\x00{req.lang or ''}\x00{req.text}".encode()
+    p = _prosody(req)
+    key = f"{req.voice or 'auto'}\x00{req.lang or ''}\x00{p['rate']}\x00{p['pitch']}\x00{p['volume']}\x00{req.text}".encode()
     return _out_dir() / f"{hashlib.sha1(key).hexdigest()[:16]}.mp3"
 
 
@@ -105,6 +119,12 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/voices")
+def voices() -> dict:
+    """The built-in native voice per language (overridable with YT_TTS_VOICES / YT_TTS_VOICE)."""
+    return {"voices": langvoice.VOICES}
+
+
 @app.post("/synth")
 async def synth(req: TTSReq) -> dict:
     text = (req.text or "").strip()
@@ -120,6 +140,7 @@ async def synth(req: TTSReq) -> dict:
         raise HTTPException(status_code=503, detail=f"edge-tts is not installed: {e}")
 
     target = _target_path(req)
+    prosody = _prosody(req)
     warnings: list[str] = []
     segments: list[dict] = []
     parts: list[Path] = []
@@ -131,7 +152,7 @@ async def synth(req: TTSReq) -> dict:
                 warnings.append(warn)
             part = tmp / f"part{i:04d}.mp3"
             try:
-                await edge_tts.Communicate(chunk["text"], voice).save(str(part))
+                await edge_tts.Communicate(chunk["text"], voice, **prosody).save(str(part))
             except Exception as e:
                 raise HTTPException(status_code=502, detail=f"edge-tts failed for {chunk['lang']} text with {voice}: {e}")
             if not part.exists() or part.stat().st_size == 0:
@@ -144,7 +165,7 @@ async def synth(req: TTSReq) -> dict:
 
     if not target.exists() or target.stat().st_size == 0:
         raise HTTPException(status_code=502, detail="edge-tts produced no audio")
-    out = {"audio": str(target), "duration": _duration_seconds(target), "segments": segments, "stub": False}
+    out = {"audio": str(target), "duration": _duration_seconds(target), "segments": segments, "prosody": prosody, "stub": False}
     if warnings:
         out["warnings"] = warnings
     return out
