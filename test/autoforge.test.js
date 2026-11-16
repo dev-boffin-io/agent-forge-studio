@@ -201,3 +201,52 @@ test('autoforge: real media outputs (stub:false) mark steps done and flow into r
   assert.equal(res.artifacts.voice, 'autoforge/x/voice.mp3');
   assert.match(res.artifacts.thumbnail, /thumbnail\.png$/);
 });
+
+// ---- voice / footage / render wiring ----------------------------------------------------------
+
+const { footageQueries } = require('../lib/autoforge');
+
+test('autoforge: short English ideas are searched as-is, no LLM call', async () => {
+  let called = false;
+  const qs = await footageQueries({ idea: 'coffee brewing', script: '', sendChat: async () => { called = true; return { text: '' }; }, provider: {}, model: 'm' });
+  assert.deepEqual(qs, ['coffee brewing']);
+  assert.equal(called, false);
+});
+
+test('autoforge: a Bengali idea is turned into English footage queries by the model', async () => {
+  const sendChat = async () => ({ text: 'Here you go: ["coffee beans", "barista pouring latte", "cafe morning", "বাংলা"]' });
+  const qs = await footageQueries({ idea: 'কফি বানানোর সহজ উপায়', script: 'x', sendChat, provider: {}, model: 'm' });
+  assert.deepEqual(qs, ['coffee beans', 'barista pouring latte', 'cafe morning']);   // non-ASCII entry dropped
+});
+
+test('autoforge: footage queries never come back empty when the model fails', async () => {
+  const qs = await footageQueries({ idea: 'কফি', script: '', sendChat: async () => { throw new Error('down'); }, provider: {}, model: 'm' });
+  assert.deepEqual(qs, ['cinematic b-roll']);
+  const mixed = await footageQueries({ idea: 'কফি brewing guide for beginners at home with a moka pot', script: '', sendChat: async () => ({ text: 'no json' }), provider: {}, model: 'm' });
+  assert.ok(mixed.length === 1 && /^[\x20-\x7e]+$/.test(mixed[0]) && mixed[0].length > 3);
+});
+
+test('autoforge: TTS gets the cleaned narration, render gets the configured aspect, real errors surface', async () => {
+  const dir = tmpDir();
+  let ttsArgs = null; let renderArgs = null; let queriesSeen = null;
+  const { deps } = baseDeps(dir, {
+    sendChat: async () => ({ text: '# শিরোনাম\n\n**HOOK:** আজ আমরা কফি নিয়ে কথা বলব। [ON SCREEN: কফি]\n' }),
+    findStockFootage: async (o) => { queriesSeen = o.queries; return { stub: false, provider: 'pexels', count: 1, shots: [{ file: 'a.mp4', start: 0, end: 5, stub: false }] }; },
+  });
+  const orig = deps.executeTool;
+  deps.executeTool = async (name, argsRaw, ctx) => {
+    if (name === 'tts_synth') { ttsArgs = JSON.parse(argsRaw); return { content: JSON.stringify({ audio: 'v.mp3', duration: 9, stub: false }) }; }
+    if (name === 'render_video') { renderArgs = JSON.parse(argsRaw); return { error: true, content: 'error: no playable shot files were provided' }; }
+    return orig(name, argsRaw, ctx);
+  };
+  const { events, emit } = collect();
+  await runAutoForge({ idea: 'কফি বানানো', cfg: { model: 'm', videoAspect: '9:16', videoResolution: 720 }, emit, onQuestion: async () => UPLOAD_NO, deps });
+
+  assert.ok(!/ON SCREEN|HOOK|\*\*|#/.test(ttsArgs.text), ttsArgs.text);
+  assert.match(ttsArgs.text, /আজ আমরা কফি নিয়ে কথা বলব।/);
+  assert.ok(Array.isArray(queriesSeen) && queriesSeen.length >= 1);
+  assert.equal(renderArgs.aspect, '9:16');
+  assert.equal(renderArgs.resolution, 720);
+  const render = events.filter((e) => e.event === 'autoforge' && e.data.id === 'render' && e.data.status === 'skipped')[0];
+  assert.match(render.data.detail, /no playable shot files/);       // the real reason, not "worker offline"
+});

@@ -108,3 +108,26 @@ use Pages your logged-in account already administers.
 - `node scripts/check.js` — syntax + smoke check
 - `npm test` — run tests
 - `npm run build` — Node SEA single executable
+
+## Video creation (Auto-Forge) — workers
+
+Auto-Forge needs two small local workers plus `ffmpeg`/`ffprobe` on PATH
+(`pkg install ffmpeg` on Termux, `apt install ffmpeg` on Debian).
+
+```bash
+cd workers/tts    && pip install -r requirements.txt && uvicorn main:app --host 127.0.0.1 --port 8101
+cd workers/render && pip install -r requirements.txt && uvicorn main:app --host 127.0.0.1 --port 8102
+```
+
+- **Voice / languages** — each sentence's language is detected from its script and spoken with a
+  native edge-tts voice (Bengali, Hindi, Arabic, Japanese, … and mixed text). Only Latin-script
+  text needs a hint: `"voiceLang": "es"`. Force a single voice with `"ttsVoice"`, or override the
+  defaults with `YT_TTS_VOICES='{"bn":"bn-IN-TanishaaNeural"}'`.
+- **Aspect ratio** — `"videoAspect"`: `16:9` (default), `9:16` (Shorts/Reels), `1:1`, `4:5`.
+  Clips are scaled to cover the frame and centre-cropped, never stretched. `"videoResolution"` is
+  the shorter edge in px (use 720 on a phone).
+- **Stock footage** — only short clips are downloaded (`stockFootage.maxClipSeconds`, default 30 s;
+  `maxClipMB`, default 60), in the orientation of `videoAspect`. Non-English ideas are translated
+  into English search phrases first. The render worker trims/cycles clips to the voiceover length.
+- Worker tests: `cd workers/render && python -m unittest test_core`,
+  `cd workers/tts && python -m unittest test_langvoice`.

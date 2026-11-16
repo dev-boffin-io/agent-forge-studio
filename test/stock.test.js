@@ -252,7 +252,8 @@ test('stock: with no keys, Wikimedia Commons is used and returns real clips', as
     const r = await stock.findStockFootage({ topic: 'ocean', workDir: dirT, cfg: {}, count: 2 });
     assert.equal(r.stub, false);
     assert.equal(r.provider, 'wikimedia');
-    assert.equal(r.count, 2);
+    // WIKIMEDIA_BODY holds a 15 s and an 83 s clip: the over-long one must NOT be downloaded
+    assert.equal(r.count, 1);
     assert.ok(r.shots.every((s) => fs.existsSync(path.join(dirT, s.file))));
     assert.ok(r.shots.every((s) => s.provider === 'wikimedia'));
     assert.ok(!hosts.includes('api.pexels.com') && !hosts.includes('pixabay.com'), 'keyed providers are skipped');
@@ -368,4 +369,109 @@ test('stock: environment variables are honoured when cfg has no key', async () =
   } finally {
     if (prev === undefined) delete process.env.PIXABAY_API_KEY; else process.env.PIXABAY_API_KEY = prev;
   }
+});
+
+
+// ---- duration / size / orientation limits ---------------------------------------------------
+
+const LIMITS = { minSeconds: 3, maxSeconds: 30, maxBytes: 60 * 1024 * 1024 };
+
+test('stock: selectCandidates drops clips that are too long, too short or too big', () => {
+  const out = stock.selectCandidates([
+    { url: 'long', duration: 240 },
+    { url: 'tiny', duration: 1 },
+    { url: 'big', duration: 10, bytes: 200 * 1024 * 1024 },
+    { url: 'unknown' },
+    { url: 'ok', duration: 12 },
+  ], LIMITS);
+  assert.deepEqual(out.map((c) => c.url), ['ok', 'unknown']);   // known-length clips first
+});
+
+test('stock: pexels clips longer than the limit are never downloaded', async () => {
+  const dirT = tmpDir();
+  const downloaded = [];
+  await withMockFetch(async (url) => {
+    const u = String(url);
+    if (u.includes('api.pexels.com')) {
+      return jsonResponse({ videos: [
+        { id: 1, duration: 180, video_files: [{ file_type: 'video/mp4', width: 1920, height: 1080, link: 'https://videos.pexels.com/long.mp4' }] },
+        { id: 2, duration: 9, video_files: [{ file_type: 'video/mp4', width: 1920, height: 1080, link: 'https://videos.pexels.com/short.mp4' }] },
+      ] });
+    }
+    downloaded.push(u);
+    return clipResponse(Buffer.from('CLIP'));
+  }, async () => {
+    const r = await stock.findStockFootage({ topic: 'city', workDir: dirT, cfg: { pexelsApiKey: 'k' }, count: 3 });
+    assert.equal(r.stub, false);
+    assert.deepEqual(downloaded, ['https://videos.pexels.com/short.mp4']);
+    assert.ok(r.shots.every((s) => s.end - s.start <= 30));
+  });
+});
+
+test('stock: a clip whose content-length exceeds the size cap is skipped without reading it', async () => {
+  const dirT = tmpDir();
+  let bodyRead = false;
+  await withMockFetch(async (url) => {
+    const u = String(url);
+    if (u.includes('api.pexels.com')) {
+      return jsonResponse({ videos: [{ id: 1, duration: 8, video_files: [{ file_type: 'video/mp4', width: 1920, height: 1080, link: 'https://videos.pexels.com/huge.mp4' }] }] });
+    }
+    return {
+      ok: true, status: 200, headers: { get: (k) => (k.toLowerCase() === 'content-length' ? String(500 * 1024 * 1024) : null) },
+      arrayBuffer: async () => { bodyRead = true; return new ArrayBuffer(4); },
+    };
+  }, async () => {
+    const r = await stock.findStockFootage({ topic: 'x', workDir: dirT, cfg: { pexelsApiKey: 'k' } });
+    assert.equal(r.stub, true);
+    assert.equal(bodyRead, false);
+  });
+});
+
+test('stock: portrait video asks Pexels for portrait and rejects landscape renditions elsewhere', () => {
+  assert.equal(stock.resolveOrientation({ videoAspect: '9:16' }), 'portrait');
+  assert.equal(stock.resolveOrientation({ videoAspect: 'shorts' }), 'portrait');
+  assert.equal(stock.resolveOrientation({ videoAspect: '1:1' }), 'square');
+  assert.equal(stock.resolveOrientation({}), 'landscape');
+  assert.equal(stock.resolveOrientation({ stockFootage: { orientation: 'portrait' } }), 'portrait');
+
+  const files = [{ url: 'land', width: 1920, height: 1080 }, { url: 'port', width: 1080, height: 1920 }];
+  assert.equal(stock.rankRendition(files, { orientation: 'portrait' }).url, 'port');
+  assert.equal(stock.rankRendition(files, { orientation: 'landscape' }).url, 'land');
+  assert.equal(stock.rankRendition([files[0]], { orientation: 'portrait' }), null);
+});
+
+test('stock: rendition ranking avoids 4K when 1080p exists', () => {
+  const pick = stock.rankRendition([
+    { url: '4k', width: 3840, height: 2160 }, { url: 'fhd', width: 1920, height: 1080 }, { url: 'sd', width: 640, height: 360 },
+  ], { orientation: 'landscape' });
+  assert.equal(pick.url, 'fhd');
+});
+
+test('stock: several English queries are tried until enough clips are collected', async () => {
+  const dirT = tmpDir();
+  const searched = [];
+  await withMockFetch(async (url) => {
+    const u = new URL(String(url));
+    if (u.host === 'api.pexels.com') {
+      const q = u.searchParams.get('query');
+      searched.push(q);
+      return jsonResponse({ videos: [{ id: q.length, duration: 6, video_files: [{ file_type: 'video/mp4', width: 1920, height: 1080, link: `https://videos.pexels.com/${encodeURIComponent(q)}.mp4` }] }] });
+    }
+    return clipResponse(Buffer.from('CLIP'));
+  }, async () => {
+    const r = await stock.findStockFootage({ topic: 'কফি', queries: ['coffee beans', 'barista pouring', 'cafe interior'], workDir: dirT, cfg: { pexelsApiKey: 'k' }, count: 2 });
+    assert.deepEqual(searched, ['coffee beans', 'barista pouring']);     // stops once 2 clips exist
+    assert.equal(r.count, 2);
+    assert.equal(new Set(r.shots.map((s) => s.file)).size, 2, 'files do not overwrite each other');
+    assert.equal(r.shots[1].start, r.shots[0].end, 'one continuous timeline');
+  });
+});
+
+test('stock: non-Latin topics get a unique folder instead of colliding on "video"', () => {
+  const a = stock.slugify('কফি বানানো');
+  const b = stock.slugify('চা বানানো');
+  assert.match(a, /^video-[0-9a-f]{8}$/);
+  assert.notEqual(a, b);
+  assert.equal(stock.slugify(''), 'video');
+  assert.equal(stock.slugify('Coffee Brewing!'), 'coffee-brewing');
 });

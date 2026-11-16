@@ -1,35 +1,28 @@
-"""Render worker — assembles the final video with MoviePy + Pillow.
+"""Render worker — assembles the final video with ffmpeg (see core.py).
 
-Runs as a small FastAPI service so the Node app stays zero-runtime-dependency.
-Start it with:
-
-    pip install -r requirements.txt
+    pip install -r requirements.txt     # also needs ffmpeg + ffprobe on PATH
     uvicorn main:app --host 127.0.0.1 --port 8102
 
 Endpoints:
-    GET  /health   -> {"ok": true}
-    POST /render   -> concatenates the clips in `shots`, lays `audio` over the result and
-                      writes a real .mp4: {"video": "<abs path>", "duration": <s>, "stub": false}
-    POST /thumbnail-> draws a real 1280x720 PNG from a title: {"thumbnail": "<abs path>", ...}
-
-`shots` is the Auto-Forge shot list: [{"file": "<abs mp4>", "start": s, "end": s}, ...].
-A shot with no downloadable file, or a missing rendered clip file, is skipped so a partly
-downloaded set still renders. The audio is trimmed/looped to the video length.
+    GET  /health    -> {"ok": true, "ffmpeg": <bool>}
+    POST /render    -> {"shots": [...], "audio": "<mp3>", "aspect": "16:9|9:16|1:1|4:5", "resolution": 1080}
+                       returns {"video", "duration", "aspect", "width", "height", "segments", "stub": false}
+    POST /thumbnail -> draws a 1280x720 PNG from a title
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="youtube-forge render worker")
+import core
 
-TARGET_W, TARGET_H = 1920, 1080
-DEFAULT_FPS = 30
+app = FastAPI(title="youtube-forge render worker")
 
 
 class Shot(BaseModel):
@@ -43,6 +36,8 @@ class RenderReq(BaseModel):
     shots: list[Shot] | None = None
     audio: str | None = None
     out: str | None = None
+    aspect: str | None = None       # 16:9 (default) | 9:16 | 1:1 | 4:5, or landscape/portrait/shorts
+    resolution: int | None = None   # shorter edge in px (default 1080; use 720 on slow devices)
     # Legacy fields kept so the old contract still validates.
     script: str | None = None
     captions: str | None = None
@@ -63,81 +58,20 @@ def _render_out(req: RenderReq) -> Path:
     return p
 
 
-def _clip_files(req: RenderReq) -> list[str]:
-    files: list[str] = []
-    for shot in req.shots or []:
-        if shot.file and Path(shot.file).exists():
-            files.append(shot.file)
-    return files
-
-
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))}
 
 
 @app.post("/render")
 def render(req: RenderReq) -> dict:
-    files = _clip_files(req)
-    if not files:
-        raise HTTPException(status_code=400, detail="no downloadable shot files were provided")
-
     try:
-        from moviepy import AudioFileClip, ColorClip, VideoFileClip, concatenate_videoclips
-        from moviepy.video.fx import Resize
-    except ImportError as e:  # pragma: no cover - depends on the worker env
-        raise HTTPException(status_code=503, detail=f"moviepy is not installed: {e}")
-
-    clips = []
-    for f in files:
-        try:
-            clip = VideoFileClip(f)
-            if clip.w and clip.h and (clip.w, clip.h) != (TARGET_W, TARGET_H):
-                clip = clip.resized((TARGET_W, TARGET_H))
-            clips.append(clip)
-        except Exception:
-            continue  # skip a clip we cannot open rather than failing the whole render
-
-    if not clips:
-        raise HTTPException(status_code=422, detail="none of the provided clips could be opened")
-
-    video = concatenate_videoclips(clips, method="compose")
-
-    audio_path = req.audio
-    if audio_path and Path(audio_path).exists():
-        try:
-            audio = AudioFileClip(audio_path)
-            vid_len = float(video.duration or 0)
-            if vid_len > 0 and audio.duration > vid_len:
-                audio = audio.subclipped(0, vid_len)
-            elif vid_len > 0 and audio.duration < vid_len:
-                audio = audio.with_effects([])  # keep as-is; MoviePy leaves trailing silence
-            video = video.with_audio(audio)
-        except Exception:
-            pass  # a broken audio track must not sink the video
-
-    out = _render_out(req)
-    try:
-        video.write_videofile(
-            str(out), fps=DEFAULT_FPS, codec="libx264", audio_codec="aac", logger=None,
+        return core.render(
+            [s.model_dump() for s in (req.shots or [])], req.audio, _render_out(req),
+            aspect=req.aspect, short_side=req.resolution,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"render failed: {e}")
-    finally:
-        try:
-            video.close()
-        except Exception:
-            pass
-        for c in clips:
-            try:
-                c.close()
-            except Exception:
-                pass
-
-    if not out.exists() or out.stat().st_size == 0:
-        raise HTTPException(status_code=502, detail="render produced no file")
-
-    return {"video": str(out), "duration": round(float(video.duration or 0), 3), "stub": False}
+    except core.RenderError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
 
 
 @app.post("/thumbnail")

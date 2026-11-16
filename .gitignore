@@ -11,4 +11,6 @@ dist/
 *.mov
 *.avi
 *.mkv
-workers/
+__pycache__/
+*.py[cod]
+workers/render/autoforge/
