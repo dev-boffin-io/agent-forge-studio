@@ -122,11 +122,12 @@ fs.copyFileSync(process.execPath, OUT);
 fs.chmodSync(OUT, 0o755);
 if (isMac) spawnSync('codesign', ['--remove-signature', OUT], { stdio: 'inherit' });
 
-const inject = ['--yes', 'postject', OUT, 'NODE_SEA_BLOB', blob,
+const injectArgs = [OUT, 'NODE_SEA_BLOB', blob,
   '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2'];
-if (isMac) inject.push('--macho-segment-name', 'NODE_SEA');
+if (isMac) injectArgs.push('--macho-segment-name', 'NODE_SEA');
 const localPostject = path.join(ROOT, 'node_modules', '.bin', isWin ? 'postject.cmd' : 'postject');
-if (fs.existsSync(localPostject)) run(localPostject, inject.slice(1)); else run('npx', inject);
+if (fs.existsSync(localPostject)) run(localPostject, injectArgs);
+else run('npx', ['--yes', 'postject', ...injectArgs]);
 if (isMac) run('codesign', ['--sign', '-', OUT]);
 
 for (const f of [bundlePath, seaConfig, blob]) fs.rmSync(f, { force: true });
