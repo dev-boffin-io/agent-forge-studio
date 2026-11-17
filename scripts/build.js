@@ -49,14 +49,14 @@ function bundle(entry) {
   (function visit(file) {
     const key = keyOf(file);
     if (modules.has(key)) return;
-    const raw = fs.readFileSync(file, 'utf8');
+    const raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
     if (file.endsWith('.json')) {
       // JSON modules (e.g. lib/youtube/hooks.json) must become `module.exports = …`, not raw JS.
       const src = `module.exports = ${JSON.stringify(JSON.parse(raw))};`;
       modules.set(key, src);
       return;
     }
-    const src = raw.replace(/^#!.*\n/, '');
+    const src = raw.replace(/^#![^\r\n]*(?:\r?\n|$)/, '');
     // Syntax-check each module now so a broken file fails the build, not the binary at startup.
     try { new vm.Script(`(function (module, exports, require, __filename, __dirname) {${src}\n})`, { filename: key }); }
     catch (e) { throw new Error(`syntax error in ${key}: ${e.message}`); }
