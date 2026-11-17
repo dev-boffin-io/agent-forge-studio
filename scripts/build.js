@@ -72,7 +72,9 @@ function bundle(entry) {
   }
   out += `};
 const __path = require('node:path');
+const __entry = ${JSON.stringify(keyOf(entry))};
 const __cache = Object.create(null);
+let __main = null;
 function __load(key) {
   if (__cache[key]) return __cache[key].exports;
   const module = (__cache[key] = { exports: {} });
@@ -83,10 +85,12 @@ function __load(key) {
     for (const c of [base, base + '.js', base + '/index.js']) if (c in __defs) return __load(c);
     throw new Error('bundle: cannot resolve ' + id + ' from ' + key);
   };
+  req.main = key === __entry ? module : __main;
+  if (key === __entry) __main = module;
   __defs[key].call(module.exports, module, module.exports, req, key, dir);
   return module.exports;
 }
-__load(${JSON.stringify(keyOf(entry))});
+__load(__entry);
 `;
   return { code: out, count: modules.size };
 }
