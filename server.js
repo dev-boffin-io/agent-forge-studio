@@ -35,7 +35,7 @@ let crashCount = 0;
 process.on('uncaughtException', (err) => { crashCount++; log.error('process', 'uncaught exception', err); if (crashCount > 50) process.exit(1); });
 process.on('unhandledRejection', (err) => { log.error('process', 'unhandled promise rejection', err instanceof Error ? err : new Error(String(err))); });
 
-/* ---------- CLI:  ollama-forge-studio [dir] [--port N] [--host H] [-c | --continue] [-s ID] [--agent NAME] ---------- */
+/* ---------- CLI:  agent-forge-studio [dir] [--port N] [--host H] [-c | --continue] [-s ID] [--agent NAME] ---------- */
 
 function parseArgs(argv) {
   const o = { dir: null, port: Number(process.env.PORT || 4312), host: process.env.HOST || '127.0.0.1', cont: false, session: null, agent: null };
@@ -48,7 +48,7 @@ function parseArgs(argv) {
     else if (a === '--session' || a === '-s') o.session = argv[++i];
     else if (a === '--agent') o.agent = argv[++i];
     else if (a === '-h' || a === '--help') {
-      console.log('usage: ollama-forge-studio [dir] [--port N] [--host H] [-c|--continue] [-s <session-id>] [--agent <name>]');
+      console.log('usage: agent-forge-studio [dir] [--port N] [--host H] [-c|--continue] [-s <session-id>] [--agent <name>]');
       process.exit(0);
     } else if (!a.startsWith('-') && !o.dir) o.dir = a;
   }
@@ -822,7 +822,7 @@ if (require.main === module) (async () => {
     });
     server.listen(port, args.host, () => {
       if (cfg.loadConfig().snapshots !== false) snapshot.warmUp().catch(log.swallow('boot', 'snapshot warm-up failed'));   // background: never delays a message
-      console.log(`ollama-forge-studio  dir: ${workDir}`);
+      console.log(`agent-forge-studio  dir: ${workDir}`);
       console.log(`               url: http://${args.host}:${server.address().port}${startup.sessionId ? `   (resuming ${startup.sessionId})` : ''}`);
     });
   };

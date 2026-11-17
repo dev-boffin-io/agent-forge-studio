@@ -4,7 +4,7 @@
 /**
  * Build a single self-contained executable (Node SEA) for the CURRENT platform.
  *
- *   node scripts/build.js            ->  dist/ollama-forge-studio[.exe]
+ *   node scripts/build.js            ->  dist/agent-forge-studio[.exe]
  *
  * Steps: bundle server.js + lib/*.js into one CommonJS file (tiny built-in bundler, no deps),
  * embed public/* as SEA assets, generate the blob, copy the running `node` binary and inject the blob.
@@ -15,10 +15,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
-const NAME = 'ollama-forge-studio';
+const NAME = 'agent-forge-studio';
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 const OUT = path.join(DIST, NAME + (isWin ? '.exe' : ''));
@@ -48,7 +49,17 @@ function bundle(entry) {
   (function visit(file) {
     const key = keyOf(file);
     if (modules.has(key)) return;
-    const src = fs.readFileSync(file, 'utf8').replace(/^#!.*\n/, '');
+    const raw = fs.readFileSync(file, 'utf8');
+    if (file.endsWith('.json')) {
+      // JSON modules (e.g. lib/youtube/hooks.json) must become `module.exports = …`, not raw JS.
+      const src = `module.exports = ${JSON.stringify(JSON.parse(raw))};`;
+      modules.set(key, src);
+      return;
+    }
+    const src = raw.replace(/^#!.*\n/, '');
+    // Syntax-check each module now so a broken file fails the build, not the binary at startup.
+    try { new vm.Script(`(function (module, exports, require, __filename, __dirname) {${src}\n})`, { filename: key }); }
+    catch (e) { throw new Error(`syntax error in ${key}: ${e.message}`); }
     modules.set(key, src);
     for (const m of src.matchAll(/\brequire\(\s*(['"])(\.{1,2}\/[^'"]*)\1\s*\)/g)) visit(resolveFile(file, m[2]));
     // dynamic / computed relative requires can't be bundled — fail loudly instead of at runtime
@@ -114,7 +125,8 @@ if (isMac) spawnSync('codesign', ['--remove-signature', OUT], { stdio: 'inherit'
 const inject = ['--yes', 'postject', OUT, 'NODE_SEA_BLOB', blob,
   '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2'];
 if (isMac) inject.push('--macho-segment-name', 'NODE_SEA');
-run('npx', inject);
+const localPostject = path.join(ROOT, 'node_modules', '.bin', isWin ? 'postject.cmd' : 'postject');
+if (fs.existsSync(localPostject)) run(localPostject, inject.slice(1)); else run('npx', inject);
 if (isMac) run('codesign', ['--sign', '-', OUT]);
 
 for (const f of [bundlePath, seaConfig, blob]) fs.rmSync(f, { force: true });
